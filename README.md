@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="labelme/icons/icon.png"><br/>labelme
+  <img src="labelme/icons/icon-256.png" width="200" height="200"><br/>labelme
 </h1>
 
 <h4 align="center">
@@ -10,6 +10,7 @@
   <a href="https://pypi.python.org/pypi/labelme"><img src="https://img.shields.io/pypi/v/labelme.svg"></a>
   <!-- <a href="https://pypi.org/project/labelme"><img src="https://img.shields.io/pypi/pyversions/labelme.svg"></a> -->
   <a href="https://github.com/wkentaro/labelme/actions"><img src="https://github.com/wkentaro/labelme/actions/workflows/ci.yml/badge.svg?branch=main&event=push"></a>
+  <a href="https://discord.com/invite/uAjxGcJm83"><img src="https://dcbadge.limes.pink/api/server/uAjxGcJm83?style=flat"></a>
 </div>
 
 <div align="center">
@@ -57,7 +58,7 @@ There are 3 options to install labelme:
 
 ### Option 1: Using pip
 
-For more detail, check ["Install Labelme using Pip"](https://www.labelme.io/docs/install-labelme-pip).
+For more detail, check ["Install Labelme using Terminal"](https://www.labelme.io/docs/install-labelme-terminal)
 
 ```bash
 pip install labelme
@@ -139,7 +140,7 @@ pyinstaller labelme/labelme/__main__.py \
   --add-data=$(LABELME_PATH)/config/default_config.yaml:labelme/config \
   --add-data=$(LABELME_PATH)/icons/*:labelme/icons \
   --add-data=$(LABELME_PATH)/translate/*:translate \
-  --icon=$(LABELME_PATH)/icons/icon.png \
+  --icon=$(LABELME_PATH)/icons/icon-256.png \
   --onedir
 ```
 

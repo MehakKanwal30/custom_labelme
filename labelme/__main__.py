@@ -6,6 +6,7 @@ import os
 import os.path as osp
 import sys
 import traceback
+from typing import AnyStr
 
 import yaml
 from loguru import logger
@@ -20,10 +21,11 @@ from labelme.utils import newIcon
 
 
 class _LoggerIO(io.StringIO):
-    def write(self, message: str) -> int:
-        if stripped_message := message.strip():
-            logger.debug(stripped_message)
-        return len(message)
+    def write(self, s: AnyStr) -> int:
+        assert isinstance(s, str)
+        if stripped_s := s.strip():
+            logger.debug(stripped_s)
+        return len(s)
 
     def flush(self) -> None:
         pass
@@ -117,9 +119,7 @@ def main():
     parser.add_argument(
         "--config",
         dest="config",
-        help="config file or yaml-format string (default: {})".format(
-            default_config_file
-        ),
+        help=f"config file or yaml-format string (default: {default_config_file})",
         default=default_config_file,
     )
     # config for the gui
@@ -184,10 +184,11 @@ def main():
     args = parser.parse_args()
 
     if args.version:
-        print("{0} {1}".format(__appname__, __version__))
+        print(f"{__appname__} {__version__}")
         sys.exit(0)
 
     _setup_loguru(logger_level=args.logger_level.upper())
+    logger.info("Starting {} {}", __appname__, __version__)
 
     sys.excepthook = _handle_exception
 
@@ -239,7 +240,7 @@ def main():
     translator = QtCore.QTranslator()
     translator.load(
         QtCore.QLocale.system().name(),
-        osp.dirname(osp.abspath(__file__)) + "/translate",
+        f"{osp.dirname(osp.abspath(__file__))}/translate",
     )
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(__appname__)
@@ -253,7 +254,7 @@ def main():
     )
 
     if reset_config:
-        logger.info("Resetting Qt config: %s" % win.settings.fileName())
+        logger.info(f"Resetting Qt config: {win.settings.fileName()}")
         win.settings.clear()
         sys.exit(0)
 

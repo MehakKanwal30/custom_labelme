@@ -34,14 +34,21 @@ format:  # Format code
 lint:
 	$(call exec,uv run ruff format --check)
 	$(call exec,uv run ruff check)
+	$(call exec,uv run ty check --no-progress)
 
 mypy:
 	$(call exec,uv run mypy --package $(PACKAGE_NAME))
 
-check: lint mypy  # Run checks
+check_translate: update_translate
+	$(call exec,git diff --exit-code labelme/translate)
+
+check: lint check_translate # Run checks
 
 test:  # Run tests
 	$(call exec,uv run pytest -v tests/)
 
 build:  # Build the package
 	$(call exec,uv build)
+
+update_translate:
+	$(call exec,uv run --no-sync tools/update_translate.py)
