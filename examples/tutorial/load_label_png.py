@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+from __future__ import print_function
 
 import os.path as osp
 
@@ -28,7 +29,7 @@ def main():
 
     print("label: label_name")
     for label, label_name in zip(labels, label_names):
-        print(f"{label}: {label_name}")
+        print("%d: %s" % (label, label_name))
 
 
 if __name__ == "__main__":

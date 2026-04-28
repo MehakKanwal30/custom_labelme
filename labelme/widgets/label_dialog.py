@@ -16,11 +16,11 @@ class LabelQLineEdit(QtWidgets.QLineEdit):
     def setListWidget(self, list_widget):
         self.list_widget = list_widget
 
-    def keyPressEvent(self, a0: QtGui.QKeyEvent) -> None:
-        if a0.key() in [QtCore.Qt.Key_Up, QtCore.Qt.Key_Down]:
-            self.list_widget.keyPressEvent(a0)
+    def keyPressEvent(self, e):
+        if e.key() in [QtCore.Qt.Key_Up, QtCore.Qt.Key_Down]:  # type: ignore[attr-defined]
+            self.list_widget.keyPressEvent(e)
         else:
-            super().keyPressEvent(a0)
+            super(LabelQLineEdit, self).keyPressEvent(e)
 
 
 class LabelDialog(QtWidgets.QDialog):
@@ -39,7 +39,7 @@ class LabelDialog(QtWidgets.QDialog):
             fit_to_content = {"row": False, "column": True}
         self._fit_to_content = fit_to_content
 
-        super().__init__(parent)
+        super(LabelDialog, self).__init__(parent)
         self.edit = LabelQLineEdit()
         self.edit.setPlaceholderText(text)
         self.edit.setValidator(labelme.utils.labelValidator())
@@ -60,18 +60,20 @@ class LabelDialog(QtWidgets.QDialog):
         # buttons
         self.buttonBox = bb = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
-            QtCore.Qt.Horizontal,
+            QtCore.Qt.Horizontal,  # type: ignore[attr-defined]
             self,
         )
+        bb.button(bb.Ok).setIcon(labelme.utils.newIcon("done"))  # type: ignore[union-attr]
+        bb.button(bb.Cancel).setIcon(labelme.utils.newIcon("undo"))  # type: ignore[union-attr]
         bb.accepted.connect(self.validate)
         bb.rejected.connect(self.reject)
         layout.addWidget(bb)
         # label_list
         self.labelList = QtWidgets.QListWidget()
         if self._fit_to_content["row"]:
-            self.labelList.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            self.labelList.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)  # type: ignore[attr-defined]
         if self._fit_to_content["column"]:
-            self.labelList.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            self.labelList.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)  # type: ignore[attr-defined]
         self._sort_labels = sort_labels
         if labels:
             self.labelList.addItems(labels)
@@ -101,19 +103,19 @@ class LabelDialog(QtWidgets.QDialog):
         # completion
         completer = QtWidgets.QCompleter()
         if completion == "startswith":
-            completer.setCompletionMode(QtWidgets.QCompleter.InlineCompletion)
+            completer.setCompletionMode(QtWidgets.QCompleter.InlineCompletion)  # type: ignore[attr-defined]
             # Default settings.
             # completer.setFilterMode(QtCore.Qt.MatchStartsWith)
         elif completion == "contains":
-            completer.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
-            completer.setFilterMode(QtCore.Qt.MatchContains)
+            completer.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)  # type: ignore[attr-defined]
+            completer.setFilterMode(QtCore.Qt.MatchContains)  # type: ignore[attr-defined]
         else:
-            raise ValueError(f"Unsupported completion: {completion}")
+            raise ValueError("Unsupported completion: {}".format(completion))
         completer.setModel(self.labelList.model())
         self.edit.setCompleter(completer)
 
     def addLabelHistory(self, label):
-        if self.labelList.findItems(label, QtCore.Qt.MatchExactly):
+        if self.labelList.findItems(label, QtCore.Qt.MatchExactly):  # type: ignore[attr-defined]
             return
         self.labelList.addItem(label)
         if self._sort_labels:
@@ -127,22 +129,24 @@ class LabelDialog(QtWidgets.QDialog):
             self.accept()
             return
 
-        if self._get_stripped_text():
-            self.accept()
-
-    def _get_stripped_text(self) -> str:
         text = self.edit.text()
         if hasattr(text, "strip"):
-            return str(text.strip())
-        if hasattr(text, "trimmed"):
-            return str(text.trimmed())
-        return str(text)
+            text = text.strip()
+        else:
+            text = text.trimmed()  # type: ignore[attr-defined]
+        if text:
+            self.accept()
 
     def labelDoubleClicked(self, item):
         self.validate()
 
     def postProcess(self):
-        self.edit.setText(self._get_stripped_text())
+        text = self.edit.text()
+        if hasattr(text, "strip"):
+            text = text.strip()
+        else:
+            text = text.trimmed()  # type: ignore[attr-defined]
+        self.edit.setText(text)
 
     def updateFlags(self, label_new):
         # keep state of shared flags
@@ -157,7 +161,7 @@ class LabelDialog(QtWidgets.QDialog):
 
     def deleteFlags(self):
         for i in reversed(range(self.flagsLayout.count())):
-            item = self.flagsLayout.itemAt(i).widget()
+            item = self.flagsLayout.itemAt(i).widget()  # type: ignore[union-attr]
             self.flagsLayout.removeWidget(item)
             item.setParent(QtWidgets.QWidget())
 
@@ -180,9 +184,9 @@ class LabelDialog(QtWidgets.QDialog):
     def getFlags(self):
         flags = {}
         for i in range(self.flagsLayout.count()):
-            item = self.flagsLayout.itemAt(i).widget()
+            item = self.flagsLayout.itemAt(i).widget()  # type: ignore[union-attr]
             item = cast(QtWidgets.QCheckBox, item)
-            flags[item.text()] = item.isChecked()
+            flags[item.text()] = item.isChecked()  # type: ignore[union-attr]
         return flags
 
     def getGroupId(self):
@@ -226,14 +230,14 @@ class LabelDialog(QtWidgets.QDialog):
             self.edit_group_id.clear()
         else:
             self.edit_group_id.setText(str(group_id))
-        items = self.labelList.findItems(text, QtCore.Qt.MatchFixedString)
+        items = self.labelList.findItems(text, QtCore.Qt.MatchFixedString)  # type: ignore[attr-defined]
         if items:
             if len(items) != 1:
-                logger.warning(f"Label list has duplicate '{text}'")
+                logger.warning("Label list has duplicate '{}'".format(text))
             self.labelList.setCurrentItem(items[0])
             row = self.labelList.row(items[0])
-            self.edit.completer().setCurrentRow(row)
-        self.edit.setFocus(QtCore.Qt.PopupFocusReason)
+            self.edit.completer().setCurrentRow(row)  # type: ignore[union-attr]
+        self.edit.setFocus(QtCore.Qt.PopupFocusReason)  # type: ignore[attr-defined]
         if move:
             self.move(QtGui.QCursor.pos())
         if self.exec_():

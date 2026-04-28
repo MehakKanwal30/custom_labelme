@@ -21,6 +21,6 @@ def lblsave(filename, lbl):
         lbl_pil.save(filename)
     else:
         raise ValueError(
-            f"[{filename}] Cannot save the pixel-wise class label as PNG. "
-            "Please consider using the .npy format."
+            "[%s] Cannot save the pixel-wise class label as PNG. "
+            "Please consider using the .npy format." % filename
         )

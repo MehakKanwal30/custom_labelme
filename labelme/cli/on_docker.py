@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+from __future__ import print_function
 
 import argparse
 import json
@@ -17,9 +18,12 @@ def get_ip():
     if dist == "Linux":
         return ""
     elif dist == "Darwin":
-        output = subprocess.check_output("ifconfig en0", encoding="utf-8")
+        cmd = "ifconfig en0"
+        output = subprocess.check_output(shlex.split(cmd))
+        if str != bytes:  # noqa: E721
+            output = output.decode("utf-8")  # type: ignore[assignment]
         for row in output.splitlines():
-            cols = row.strip().split(" ")
+            cols = row.strip().split(" ")  # type: ignore[arg-type]
             if cols[0] == "inet":
                 ip = cols[1]
                 return ip
@@ -31,13 +35,13 @@ def get_ip():
 
 def labelme_on_docker(in_file, out_file):
     ip = get_ip()
-    cmd = f"xhost + {ip}"
+    cmd = "xhost + %s" % ip
     subprocess.check_output(shlex.split(cmd))
 
     if out_file:
         out_file = osp.abspath(out_file)
         if osp.exists(out_file):
-            raise RuntimeError(f"File exists: {out_file}")
+            raise RuntimeError("File exists: %s" % out_file)
         else:
             open(osp.abspath(out_file), "w")
 
@@ -59,10 +63,10 @@ def labelme_on_docker(in_file, out_file):
     if out_file:
         out_file_a = osp.abspath(out_file)
         out_file_b = osp.join("/home/developer", osp.basename(out_file))
-        cmd += f" -v {out_file_a}:{out_file_b}"
-    cmd += f" wkentaro/labelme labelme {in_file_b}"
+        cmd += " -v {0}:{1}".format(out_file_a, out_file_b)
+    cmd += " wkentaro/labelme labelme {0}".format(in_file_b)
     if out_file:
-        cmd += f" -O {out_file_b}"
+        cmd += " -O {0}".format(out_file_b)
     subprocess.call(shlex.split(cmd))
 
     if out_file:
@@ -88,9 +92,9 @@ def main():
     try:
         out_file = labelme_on_docker(args.in_file, args.output)
         if out_file:
-            print(f"Saved to: {out_file}")
+            print("Saved to: %s" % out_file)
     except RuntimeError as e:
-        sys.stderr.write(f"{e}\n")
+        sys.stderr.write(e.__str__() + "\n")
         sys.exit(1)
 
 

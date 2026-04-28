@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import pytest
 from PyQt5 import QtCore
 from PyQt5 import QtWidgets
@@ -43,8 +41,7 @@ def test_LabelDialog_addLabelHistory(qtbot):
     assert widget.labelList.count() == 4
     widget.addLabelHistory("bicycle")
     assert widget.labelList.count() == 4
-    item: QtWidgets.QListWidgetItem | None = widget.labelList.item(0)
-    assert item
+    item = widget.labelList.item(0)
     assert item.text() == "bicycle"
 
 
