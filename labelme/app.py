@@ -177,6 +177,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_scroll_v_ratio = 0.0
         #END
 
+        #EDITED HIDE ANNOTATIONS
+        self._hide_annotations = False
+        #END
+
         self.canvas = Canvas(
             epsilon=self._config["epsilon"],
             double_click=self._config["canvas"]["double_click"],
@@ -658,6 +662,29 @@ class MainWindow(QtWidgets.QMainWindow):
             checked=self._config.get("keep_prev_brightness", False),
             enabled=True,
         )
+        #EDITED PIXEL GRID
+        pixelGrid = action(
+            self.tr("Pixel\nGrid"),
+            self.togglePixelGrid,
+            "X",
+            tip=self.tr("Show pixel grid overlay (best used when zoomed in)"),
+            checkable=True,
+            checked=False,
+            enabled=True,
+        )
+        #END
+
+        #EDITED HIDE ANNOTATIONS
+        hideAnnotations = action(
+            self.tr("Hide\nAnnotations"),
+            self.toggleHideAnnotations,
+            "G",
+            tip=self.tr("Persist annotation visibility across image changes"),
+            checkable=True,
+            checked=False,
+            enabled=True,
+        )
+        #END
         # Group zoom controls into a list for easier toggling.
         zoomActions = (
             self.zoomWidget,
@@ -761,6 +788,8 @@ class MainWindow(QtWidgets.QMainWindow):
             fitWidth=fitWidth,
             brightnessContrast=brightnessContrast,
             keepPrevBrightness=keepPrevBrightness,
+            pixelGrid=pixelGrid,
+            hideAnnotations=hideAnnotations,
             zoomActions=zoomActions,
             openNextImg=openNextImg,
             openPrevImg=openPrevImg,
@@ -889,6 +918,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 #end
                 brightnessContrast,
                 keepPrevBrightness,
+                None,
+                #EDITED PIXEL GRID
+                pixelGrid,
+                #END
+                #EDITED HIDE ANNOTATIONS
+                hideAnnotations,
+                #END
             ),
         )
 
@@ -981,6 +1017,12 @@ class MainWindow(QtWidgets.QMainWindow):
             keepPrevBrightness,
             toggle_keep_prev_mode,
             showOriginal,
+            #EDITED PIXEL GRID
+            pixelGrid,
+            #END
+            #EDITED HIDE ANNOTATIONS
+            hideAnnotations,
+            #END
             fitWindow,
             zoom,
             None,
@@ -1363,17 +1405,20 @@ class MainWindow(QtWidgets.QMainWindow):
     def toggleShowOriginal(self, checked):
         self.canvas.show_original = checked
         if checked:
-            # Save previous zoom only
-            self._prev_zoom_state = (self.zoomMode, self.canvas.scale)
+            # Save zoom mode, scale, and scroll position as ratios
+            h_bar = self.scrollBars[Qt.Horizontal]  # type: ignore[attr-defined]
+            v_bar = self.scrollBars[Qt.Vertical]  # type: ignore[attr-defined]
+            h_ratio = h_bar.value() / h_bar.maximum() if h_bar.maximum() > 0 else 0.0
+            v_ratio = v_bar.value() / v_bar.maximum() if v_bar.maximum() > 0 else 0.0
+            self._prev_zoom_state = (self.zoomMode, self.canvas.scale, h_ratio, v_ratio)
             try:
                 self.setFitWindow(True)
             except ZeroDivisionError:
-                # Fail silently if image hasn't fully initialized
                 pass
         else:
-            # Restore zoom
+            # Restore zoom and scroll
             if hasattr(self, "_prev_zoom_state"):
-                prev_mode, prev_scale = self._prev_zoom_state
+                prev_mode, prev_scale, prev_h_ratio, prev_v_ratio = self._prev_zoom_state
                 self.zoomMode = prev_mode
                 factor = prev_scale / self.canvas.scale
                 if factor != 1.0:
@@ -1382,14 +1427,32 @@ class MainWindow(QtWidgets.QMainWindow):
                     try:
                         self.setFitWindow(True)
                     except ZeroDivisionError:
-                        # Fail silently if image hasn't fully initialized
                         pass
                 elif prev_mode == self.FIT_WIDTH:
                     self.setFitWidth(True)
+                # Force canvas to correct size so scrollbar maxima are accurate,
+                # then restore scroll position from saved ratios.
+                self.paintCanvas()
+                h_bar = self.scrollBars[Qt.Horizontal]  # type: ignore[attr-defined]
+                v_bar = self.scrollBars[Qt.Vertical]  # type: ignore[attr-defined]
+                self.setScroll(Qt.Horizontal, int(prev_h_ratio * h_bar.maximum()))  # type: ignore[attr-defined]
+                self.setScroll(Qt.Vertical, int(prev_v_ratio * v_bar.maximum()))  # type: ignore[attr-defined]
                 del self._prev_zoom_state
 
         # Just repaint — don’t touch flips or brightness here
         self.canvas.update()
+    #END
+
+    #EDITED PIXEL GRID
+    def togglePixelGrid(self, checked):
+        self.canvas.show_pixel_grid = checked
+        self.canvas.update()
+    #END
+
+    #EDITED HIDE ANNOTATIONS
+    def toggleHideAnnotations(self, checked):
+        self._hide_annotations = checked
+        self.togglePolygons(not checked)
     #END
 
     #EDITED FREEHAND DISTANCE
@@ -2086,6 +2149,11 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.setClean()
         self.canvas.setEnabled(True)
+
+        #EDITED HIDE ANNOTATIONS
+        if self._hide_annotations:
+            self.togglePolygons(False)
+        #END
 
         #EDITED ZOOM
         # set zoom values

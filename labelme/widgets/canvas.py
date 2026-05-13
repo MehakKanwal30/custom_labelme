@@ -137,6 +137,10 @@ class Canvas(QtWidgets.QWidget):
         self._is_freehand_drawing = False
         #END
 
+        #EDITED PIXEL GRID
+        self.show_pixel_grid = False
+        #END
+
     def fillDrawing(self):
         return self._fill_drawing
 
@@ -595,7 +599,7 @@ class Canvas(QtWidgets.QWidget):
                         [x for x in self.selectedShapes if x != self.hShape]
                     )
 
-        if self.movingShape and self.hShape:
+        if self.movingShape and self.hShape and self.hShape in self.shapes:
             index = self.shapes.index(self.hShape)
             if self.shapesBackups[-1][index].points != self.shapes[index].points:
                 self.storeShapes()
@@ -799,7 +803,27 @@ class Canvas(QtWidgets.QWidget):
                 p.translate(-tx, -ty)
 
             p.restore()
-        
+
+        #EDITED PIXEL GRID
+        if getattr(self, "show_pixel_grid", False) and self.pixmap:
+            img_w = self.pixmap.width()
+            img_h = self.pixmap.height()
+            offset = self.offsetToCenter()
+            rect = event.rect()
+            x_min = max(0, int(rect.left() / self.scale - offset.x()) - 1)
+            x_max = min(img_w, int(rect.right() / self.scale - offset.x()) + 2)
+            y_min = max(0, int(rect.top() / self.scale - offset.y()) - 1)
+            y_max = min(img_h, int(rect.bottom() / self.scale - offset.y()) + 2)
+            grid_pen = QtGui.QPen(QtGui.QColor(128, 128, 128, 160))
+            grid_pen.setCosmetic(True)
+            grid_pen.setWidthF(1.0)
+            p.setPen(grid_pen)
+            for x in range(x_min + 1, x_max):
+                p.drawLine(QtCore.QPointF(x, y_min), QtCore.QPointF(x, y_max))
+            for y in range(y_min + 1, y_max):
+                p.drawLine(QtCore.QPointF(x_min, y), QtCore.QPointF(x_max, y))
+        #END PIXEL GRID
+
         p.scale(1 / self.scale, 1 / self.scale)
 
         # --- Draw shapes ---
@@ -1394,6 +1418,9 @@ class Canvas(QtWidgets.QWidget):
         self.restoreCursor()
         self.pixmap = None  # type: ignore[assignment]
         self.shapesBackups = []
+        self.selectedShapes = []
+        self.movingShape = False
+        self.hShape = None
         self.update()
 
 
