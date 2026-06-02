@@ -1,248 +1,167 @@
-<h1 align="center">
-  <img src="labelme/icons/icon.png"><br/>labelme
-</h1>
-
-<h4 align="center">
-  Custom Version of Image Polygonal Annotation 5.8.3 with Python 
-</h4>
-
 # Custom LabelMe
 
-This repository contains a modified version of **LabelMe** customized for faster and easier data annotation.
-
-The purpose of these modifications is to reduce annotation time and improve usability for annotation tasks that are difficult to handle in the base version of LabelMe.
-
----
-
-## Overview
-
-The following custom features and fixes have been added:
-
-1. Pen / Lasso Tool
-2. Ghost Flip
-3. Redo Functionality
-4. Annotation Flipping
-5. Show Original Image
-6. Previous Zoom Fix
-7. Brightness Toggle Fix
+A modified fork of **LabelMe 5.8.3** built for faster, more ergonomic image annotation.  
+Adds dark mode, viewport-aware keep-previous, pixel painting, batch annotation ops, and more on top of the upstream tool.
 
 ---
 
-## Basic Requirements
-
-Make sure you have one of the following installed:
+## Requirements
 
 - Python 3.10
-- Anaconda latest version
+- PyQt5, Pillow, numpy (installed automatically via `pip install -e .`)
 
 ---
 
 ## Installation
 
-### 1. Create a Virtual Environment
-
-Creating a virtual environment is optional but recommended.
-
-#### Using Python
-
-```bash
-python -m venv labelme_env
-labelme_env\Scripts\activate
-```
-
-#### Using Anaconda
-
-```bash
-conda create -n labelme_env python=3.10 -y
-conda activate labelme_env
-```
-
----
-
-### 2. Download the Repository
-
 ```bash
 git clone https://github.com/MehakKanwal30/custom_labelme.git
 cd custom_labelme
-```
-
----
-
-### 3. Install Modified LabelMe
-
-```bash
 pip install -e .
 ```
 
----
+> Optional: create a virtual environment first (`python -m venv env && source env/bin/activate`).
 
-## Running Modified LabelMe
-
-After installation, run:
+## Running
 
 ```bash
 labelme
 ```
 
----
-
-## Updating on Another PC
-
-Whenever changes are made to the repository, update your local copy using:
+## Updating
 
 ```bash
 git pull
-```
-
-If needed, reinstall using:
-
-```bash
-pip install -e .
+pip install -e .   # only needed if dependencies changed
 ```
 
 ---
-# Feature Explanation
+
+## Custom Features
+
+### Dark Mode
+Default theme. Applied via Qt Fusion palette on startup — no configuration needed.
 
 ---
 
-## 1. Pen / Lasso Tool
-### Old Behavior
-
-There was no method to create continuous points using mouse click.
-
-### New Behavior
-
-When the left mouse button is held down and dragged, points are continuously created under the mouse pointer.
-
-### Usage
-
-- Press **Left Shift**, hold the **left mouse button**, and start dragging.
-- If drawing is interrupted, it can be continued by pressing **Left Shift** and holding the **left mouse button** again.
-- When finished, hold **Left Ctrl** and press the **left mouse button** to end drawing.
-- To change the distance between points, adjust the **Lasso Step** value in the toolbar.
+### Lasso / Freehand Tool
+Hold **Left Shift + drag** to stream points continuously.  
+End with **Ctrl + Left Click**.  
+Adjust point spacing with the **Lasso Step** spinbox in the toolbar.
 
 ---
 
-## 2. Ghost Flip
-### Old Behavior
+### Ghost Flip
+Flips the canvas display for easier point placement. Saved coordinates always use original image space.
 
-There was no method to flip the canvas and place points on the flipped view.
-
-### New Behavior
-
-Ghost Flip flips the canvas and mouse input for easier point placement.
-
-The final points are still saved according to the original image coordinates, regardless of the flipped view.
-
-### Usage
-
-- Use the respective buttons provided in the toolbar.
-- Press **H** to flip the canvas horizontally.
-- Press **V** to flip the canvas vertically.
+| Action | Shortcut |
+|---|---|
+| Flip image horizontally | `H` |
+| Flip image vertically | `V` |
+| Show original (no flip/adjustments) | `B` |
 
 ---
 
-## 3. Redo Functionality
-### Old Behavior
+### Annotation Flip
+Flips the **selected polygon** in place.
 
-If a shape was accidentally deleted or removed, there was no backup to restore it.
-
-### New Behavior
-
-A backup is kept so deleted shapes can be restored easily.
-
-### Usage
-
-```text
-Ctrl + Y
-```
-
-Pressing **Ctrl + Y** after deleting a shape will bring it back.
+| Action | Shortcut |
+|---|---|
+| Flip polygon horizontally | `Ctrl+Shift+H` |
+| Flip polygon vertically | `Ctrl+Shift+V` |
 
 ---
 
-## 4. Annotation Flipping
-
-### Files Modified
-### Old Behavior
-
-There was no method to flip a created polygon or shape.
-
-### New Behavior
-
-Any selected shape or line can be flipped vertically or horizontally.
-
-### Usage
-
-- Use the respective buttons provided in the toolbar.
-- Press **Ctrl + Shift + H** to flip the selected shape horizontally.
-- Press **Ctrl + Shift + V** to flip the selected shape vertically.
+### Redo
+`Ctrl+Y` — restores deleted shapes or re-applies undone point edits.  
+Works for both whole-shape undo/redo and individual point undo/redo during drawing.
 
 ---
 
-## 5. Show Original Image
+### Pixel Paint
+`Ctrl+R` — paint pixels directly onto the image; finalises as a polygon.
 
-### Files Modified
-### Old Behavior
-
-There was no method to temporarily show the original image.
-
-### New Behavior
-
-Because multiple views were added, such as flipped or color-adjusted views, this feature allows the user to temporarily view the original image by removing all effects.
-
-### Usage
-
-```text
-B
-```
-
-- Press **B** to show the original image.
-- Press **B** again to return to the previous view.
+| Action | Input |
+|---|---|
+| Paint | LMB drag |
+| Erase | RMB drag |
+| Finalise | `Ctrl+LMB` or `Enter` |
+| Undo stroke | `Ctrl+Z` |
 
 ---
 
-## 6. Previous Zoom Fix
-### Old Behavior
-
-When toggling the keep scale mode, it would not apply to previously loaded images. It only worked on newly loaded images.
-
-### New Behavior
-
-The zoom is applied to any image that is loaded while keep scale mode is toggled.
-
-### Usage
-
-Use the respective buttons provided in the toolbar.
+### Pixel Grid
+`X` — draws a per-pixel boundary grid overlay. Most useful when zoomed in.
 
 ---
 
-## 7. Brightness Toggle Fix
-### Old Behavior
+### Hide Annotations
+`G` — toggles annotation visibility. State persists across image switches.
 
-When changing the brightness or contrast slider, LabelMe could crash because it tried to update the image for every value change on the slider.
+---
 
-### New Behavior
+### Keep Scale
+Toolbar toggle — carries the current zoom level to every subsequent image.
 
-The image is updated only when the slider is released.
+---
 
-This prevents LabelMe from updating the image for every slider movement and improves stability.
+### Keep Annotation
+Toolbar toggle — copies annotations from the previous image to the next.
 
-### Usage
+**Rules:**
+- New image is **empty** → all annotations visible in the previous viewport are copied.
+- New image has shapes + previous viewport had **exactly 1** annotation → copies that annotation only if no shape overlaps the same region.
+- New image already has shapes in that region, or previous viewport had multiple shapes → nothing is copied.
 
-Use the respective buttons provided in the toolbar.
+---
+
+### Keep Brightness
+Toolbar toggle (also available as a checkbox inside the Brightness/Contrast dialog) — carries brightness and contrast settings across image switches.
+
+---
+
+### Annotation Operations
+Four toolbar buttons for batch editing. All operate on the **current image only** and work on annotations **visible in the zoomed viewport**.
+
+#### Auto Delete
+Toggle. On each image switch, deletes the annotation in the current view.  
+**Delete All** checkbox: when ticked, deletes *all* annotations in view instead of requiring exactly one.
+
+#### Replace Label
+Toggle + text box. On each image switch, renames the label of the single annotation in view to the text typed in the box. Ignored if more than one annotation is in view.
+
+#### Replace Polygon
+Toggle. Two-step workflow:
+1. Zoom in to the annotation you want to use as a template → click to store it (label shown below button).
+2. Navigate to target images — the single annotation in view is replaced with the stored template, centroid-aligned.
+
+Click again to clear the template and turn off.
+
+#### Separate L/R
+Toggle. On each image switch, prefixes every annotation with `left_` or `right_` based on its mean x-position vs the image midline. Annotations already prefixed are skipped.  
+**Apply Folder** button: one-shot — applies the same operation to every JSON file in the current folder.
+
+---
+
+## Keyboard Shortcut Reference
+
+| Feature | Shortcut |
+|---|---|
+| Lasso start/continue | `Shift + LMB drag` |
+| Lasso end | `Ctrl + LMB` |
+| Pixel paint mode | `Ctrl+R` |
+| Undo shape / point | `Ctrl+Z` |
+| Redo shape / point | `Ctrl+Y` |
+| Flip image H | `H` |
+| Flip image V | `V` |
+| Show original | `B` |
+| Flip polygon H | `Ctrl+Shift+H` |
+| Flip polygon V | `Ctrl+Shift+V` |
+| Pixel grid | `X` |
+| Hide annotations | `G` |
 
 ---
 
 ## Known Issues
 
-- If you encounter a `qtpy` installation issue, run:
-
-```bash
-pip install qtpy
-```
----
-
-## Notes
-
-This modified version of LabelMe is designed specifically to improve annotation workflow efficiency and provide additional tools that are not available in the base LabelMe version.
+- If a `qtpy` import error appears on first run: `pip install qtpy`

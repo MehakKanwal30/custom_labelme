@@ -5,6 +5,7 @@ import html
 import math
 import os
 import os.path as osp
+import json
 import re
 import webbrowser
 
@@ -181,6 +182,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hide_annotations = False
         #END
 
+        self._replace_polygon_template = None
+
         self.canvas = Canvas(
             epsilon=self._config["epsilon"],
             double_click=self._config["canvas"]["double_click"],
@@ -327,7 +330,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
         toggle_keep_prev_mode = action(
-            self.tr("Previous\nAnnotation"),
+            self.tr("Keep Annotation"),
             self.toggleKeepPrevMode,
             shortcuts["toggle_keep_prev_mode"],
             None,
@@ -636,7 +639,7 @@ class MainWindow(QtWidgets.QMainWindow):
             enabled=False,
         )
         keepPrevScale = action(
-            self.tr("&Previous\nScale"),
+            self.tr("Keep Scale"),
             self.enableKeepPrevScale,
             tip=self.tr("Keep previous zoom scale"),
             checkable=True,
@@ -700,6 +703,137 @@ class MainWindow(QtWidgets.QMainWindow):
             enabled=True,
         )
         #END
+
+        #EDITED ANNOTATION OPS
+        deletePolygon = action(
+            self.tr("Auto Delete"),
+            self.deletePolygonOp,
+            tip=self.tr("Toggle: auto-delete the annotation in view on each image switch (needs exactly 1 in view)"),
+            checkable=True,
+            enabled=True,
+        )
+        deletePolygonMulti = action(
+            self.tr("Delete All"),
+            None,
+            tip=self.tr("When active, auto-delete removes ALL annotations in view instead of requiring exactly 1"),
+            checkable=True,
+            enabled=True,
+        )
+        replaceLabel = action(
+            self.tr("Replace Label"),
+            self.replaceLabelOp,
+            tip=self.tr("Toggle: auto-replace the label of the annotation in view on each image switch (needs exactly 1 in view)"),
+            checkable=True,
+            enabled=True,
+        )
+
+        _OP_BTN_W  = 130  # shared fixed width for all annotation-op toolbar widgets
+        _OP_BTN_H  = 26
+        _OP_SUB_H  = 16
+        _OP_SUB_PT = 8
+
+        # Auto Delete: button + "Delete All" checkbox stacked in one toolbar widget
+        autoDeleteWidget = QtWidgets.QWidgetAction(self)
+        _adContainer = QtWidgets.QWidget()
+        _adContainer.setFixedWidth(_OP_BTN_W)
+        _adLayout = QtWidgets.QVBoxLayout(_adContainer)
+        _adLayout.setContentsMargins(2, 1, 2, 1)
+        _adLayout.setSpacing(1)
+        _adBtn = QtWidgets.QToolButton()
+        _adBtn.setDefaultAction(deletePolygon)
+        _adBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _adBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        self.deleteAllCheck = QtWidgets.QCheckBox(self.tr("Delete All"))
+        _adFont = self.deleteAllCheck.font()
+        _adFont.setPointSize(_OP_SUB_PT)
+        self.deleteAllCheck.setFont(_adFont)
+        self.deleteAllCheck.setFixedHeight(_OP_SUB_H)
+        self.deleteAllCheck.toggled.connect(deletePolygonMulti.setChecked)
+        deletePolygonMulti.toggled.connect(self.deleteAllCheck.setChecked)
+        _adLayout.addWidget(_adBtn)
+        _adLayout.addWidget(self.deleteAllCheck)
+        autoDeleteWidget.setDefaultWidget(_adContainer)
+
+        # Replace Label: button + new-label text box stacked in one toolbar widget
+        replaceLabelWidget = QtWidgets.QWidgetAction(self)
+        _rlContainer = QtWidgets.QWidget()
+        _rlContainer.setFixedWidth(_OP_BTN_W)
+        _rlLayout = QtWidgets.QVBoxLayout(_rlContainer)
+        _rlLayout.setContentsMargins(2, 1, 2, 1)
+        _rlLayout.setSpacing(1)
+        _rlBtn = QtWidgets.QToolButton()
+        _rlBtn.setDefaultAction(replaceLabel)
+        _rlBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _rlBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        self.replaceLabelEdit = QtWidgets.QLineEdit()
+        self.replaceLabelEdit.setPlaceholderText(self.tr("new label"))
+        _rlFont = self.replaceLabelEdit.font()
+        _rlFont.setPointSize(_OP_SUB_PT)
+        self.replaceLabelEdit.setFont(_rlFont)
+        self.replaceLabelEdit.setFixedHeight(_OP_SUB_H)
+        _rlLayout.addWidget(_rlBtn)
+        _rlLayout.addWidget(self.replaceLabelEdit)
+        replaceLabelWidget.setDefaultWidget(_rlContainer)
+
+        replacePolygon = action(
+            self.tr("Replace Polygon"),
+            self.replacePolygonOp,
+            tip=self.tr("Toggle: click with 1 annotation in view to store template; auto-replaces on each image switch"),
+            checkable=True,
+            enabled=True,
+        )
+
+        # Replace Polygon: button + template-info label stacked in one toolbar widget
+        replacePolygonWidget = QtWidgets.QWidgetAction(self)
+        _rpContainer = QtWidgets.QWidget()
+        _rpContainer.setFixedWidth(_OP_BTN_W)
+        _rpLayout = QtWidgets.QVBoxLayout(_rpContainer)
+        _rpLayout.setContentsMargins(2, 1, 2, 1)
+        _rpLayout.setSpacing(1)
+        _rpBtn = QtWidgets.QToolButton()
+        _rpBtn.setDefaultAction(replacePolygon)
+        _rpBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _rpBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        self.replacePolygonTemplateLabel = QtWidgets.QLabel(self.tr("(none)"))
+        _rpFont = self.replacePolygonTemplateLabel.font()
+        _rpFont.setPointSize(_OP_SUB_PT)
+        self.replacePolygonTemplateLabel.setFont(_rpFont)
+        self.replacePolygonTemplateLabel.setFixedHeight(_OP_SUB_H)
+        self.replacePolygonTemplateLabel.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        _rpLayout.addWidget(_rpBtn)
+        _rpLayout.addWidget(self.replacePolygonTemplateLabel)
+        replacePolygonWidget.setDefaultWidget(_rpContainer)
+
+        separateLR = action(
+            self.tr("Separate L/R"),
+            self.separateLROp,
+            tip=self.tr("Toggle: auto-add left/right prefix to all annotations on each image switch"),
+            checkable=True,
+            enabled=True,
+        )
+
+        # Separate L/R: toggle button + one-shot folder button stacked in one toolbar widget
+        separateLRWidget = QtWidgets.QWidgetAction(self)
+        _slContainer = QtWidgets.QWidget()
+        _slContainer.setFixedWidth(_OP_BTN_W)
+        _slLayout = QtWidgets.QVBoxLayout(_slContainer)
+        _slLayout.setContentsMargins(2, 1, 2, 1)
+        _slLayout.setSpacing(1)
+        _slBtn = QtWidgets.QToolButton()
+        _slBtn.setDefaultAction(separateLR)
+        _slBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _slBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        _slFolderBtn = QtWidgets.QPushButton(self.tr("Apply Folder"))
+        _slFolderFont = _slFolderBtn.font()
+        _slFolderFont.setPointSize(_OP_SUB_PT)
+        _slFolderBtn.setFont(_slFolderFont)
+        _slFolderBtn.setFixedHeight(_OP_SUB_H)
+        _slFolderBtn.clicked.connect(self.separateLRFolderOp)
+        _slLayout.addWidget(_slBtn)
+        _slLayout.addWidget(_slFolderBtn)
+        separateLRWidget.setDefaultWidget(_slContainer)
+        #END
+
         # Group zoom controls into a list for easier toggling.
         zoomActions = (
             self.zoomWidget,
@@ -806,6 +940,15 @@ class MainWindow(QtWidgets.QMainWindow):
             keepPrevBrightness=keepPrevBrightness,
             pixelGrid=pixelGrid,
             hideAnnotations=hideAnnotations,
+            deletePolygon=deletePolygon,
+            deletePolygonMulti=deletePolygonMulti,
+            replaceLabel=replaceLabel,
+            autoDeleteWidget=autoDeleteWidget,
+            replaceLabelWidget=replaceLabelWidget,
+            replacePolygonWidget=replacePolygonWidget,
+            separateLRWidget=separateLRWidget,
+            replacePolygon=replacePolygon,
+            separateLR=separateLR,
             zoomActions=zoomActions,
             openNextImg=openNextImg,
             openPrevImg=openPrevImg,
@@ -936,12 +1079,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 #end
                 brightnessContrast,
                 keepPrevBrightness,
+                toggle_keep_prev_mode,
                 None,
                 #EDITED PIXEL GRID
                 pixelGrid,
                 #END
                 #EDITED HIDE ANNOTATIONS
                 hideAnnotations,
+                #END
+                #EDITED ANNOTATION OPS
+                None,
+                separateLR,
                 #END
             ),
         )
@@ -1002,6 +1150,34 @@ class MainWindow(QtWidgets.QMainWindow):
         ai_prompt_action = QtWidgets.QWidgetAction(self)
         ai_prompt_action.setDefaultWidget(self._ai_prompt_widget)
 
+        # Keep Scale / Keep Annotation — single-button widgets matching the
+        # annotation-op style (same fixed width, ToolButtonTextOnly, full height).
+        _keep_btn_h = _OP_BTN_H + _OP_SUB_H + 1  # matches combined-widget total height
+
+        keepScaleWidget = QtWidgets.QWidgetAction(self)
+        _ksContainer = QtWidgets.QWidget()
+        _ksContainer.setFixedWidth(_OP_BTN_W)
+        _ksLayout = QtWidgets.QVBoxLayout(_ksContainer)
+        _ksLayout.setContentsMargins(2, 1, 2, 1)
+        _ksBtn = QtWidgets.QToolButton()
+        _ksBtn.setDefaultAction(keepPrevScale)
+        _ksBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _ksBtn.setFixedSize(_OP_BTN_W - 4, _keep_btn_h)
+        _ksLayout.addWidget(_ksBtn)
+        keepScaleWidget.setDefaultWidget(_ksContainer)
+
+        keepAnnotationWidget = QtWidgets.QWidgetAction(self)
+        _kaContainer = QtWidgets.QWidget()
+        _kaContainer.setFixedWidth(_OP_BTN_W)
+        _kaLayout = QtWidgets.QVBoxLayout(_kaContainer)
+        _kaLayout.setContentsMargins(2, 1, 2, 1)
+        _kaBtn = QtWidgets.QToolButton()
+        _kaBtn.setDefaultAction(toggle_keep_prev_mode)
+        _kaBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _kaBtn.setFixedSize(_OP_BTN_W - 4, _keep_btn_h)
+        _kaLayout.addWidget(_kaBtn)
+        keepAnnotationWidget.setDefaultWidget(_kaContainer)
+
         self.tools = self.toolbar("Tools")
         self.actions.tool = (  # type: ignore[attr-defined]
             open_,
@@ -1013,43 +1189,24 @@ class MainWindow(QtWidgets.QMainWindow):
             None,
             createMode,
             editMode,
-            #EDITED PIXEL PAINT
             createPixelPaintMode,
-            #END
             duplicate,
             delete,
             undo,
             brightnessContrast,
-            #EDITED FLIPPING
-            None,
-            flip_polygon_horizontal,
-            flip_polygon_vertical,
-            #END
-            #EDITED GHOST FLIP
-            flip_horizontal,
-            flip_vertical,
-            #END
-            #EDITED FREEHAND DISTANCE
             None,
             lasso,
-            #END
             None,
-            keepPrevScale,
-            keepPrevBrightness,
-            toggle_keep_prev_mode,
-            showOriginal,
-            #EDITED PIXEL GRID
-            pixelGrid,
-            #END
-            #EDITED HIDE ANNOTATIONS
-            hideAnnotations,
-            #END
+            keepScaleWidget,
+            keepAnnotationWidget,
+            None,
+            autoDeleteWidget,
+            replaceLabelWidget,
+            replacePolygonWidget,
+            separateLRWidget,
+            None,
             fitWindow,
             zoom,
-            None,
-            selectAiModel,
-            None,
-            ai_prompt_action,
         )
 
         self.statusBar().showMessage(str(self.tr("%s started.")) % __appname__)  # type: ignore[union-attr]
@@ -2070,6 +2227,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._config["keep_prev_brightness"] = enabled
         self._config["keep_prev_contrast"] = enabled
         self.actions.keepPrevBrightness.setChecked(enabled)  # type: ignore[attr-defined]
+        if hasattr(self, "brightnessContrastDialog") and self.brightnessContrastDialog is not None:
+            btn = self.brightnessContrastDialog.keep_brightness_btn
+            if btn.isChecked() != enabled:
+                btn.setChecked(enabled)
 
     def onNewBrightnessContrast(self, qimage):
         #EDITED BRIGHTNESS
@@ -2092,7 +2253,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 utils.img_data_to_pil(self.imageData),
                 self.onNewBrightnessContrast,
                 parent=self,
+                keep_setter=self.enableKeepPrevBrightness,
             )
+        self.brightnessContrastDialog.keep_brightness_btn.setChecked(
+            self._config.get("keep_prev_brightness", False)
+        )
         self.brightnessContrastDialog.exec_()
         brightness = self.brightnessContrastDialog.slider_brightness.value()
         contrast = self.brightnessContrastDialog.slider_contrast.value()
@@ -2212,34 +2377,43 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.labelFile.flags is not None:
                 flags.update(self.labelFile.flags)
         self.loadFlags(flags)
-        if self._config["keep_prev"] and len(_kp_prev_shapes) == 1:
-            # Only copy when the viewport is focused on exactly one shape.
-            # Multiple shapes in view means the user is not specifically working
-            # on any single one, so nothing is auto-copied.
-            new_vp_shapes = [
-                s for s in self.canvas.shapes
-                if s.points
-                and max(p.x() for p in s.points) >= _kp_vx0
-                and min(p.x() for p in s.points) <= _kp_vx1
-                and max(p.y() for p in s.points) >= _kp_vy0
-                and min(p.y() for p in s.points) <= _kp_vy1
-            ]
-            ps = _kp_prev_shapes[0]
-            pxs = [p.x() for p in ps.points]
-            pys = [p.y() for p in ps.points]
-            px0_s, px1_s = min(pxs), max(pxs)
-            py0_s, py1_s = min(pys), max(pys)
-            has_match = any(
-                max(p.x() for p in ns.points) >= px0_s
-                and min(p.x() for p in ns.points) <= px1_s
-                and max(p.y() for p in ns.points) >= py0_s
-                and min(p.y() for p in ns.points) <= py1_s
-                for ns in new_vp_shapes
-            )
-            if not has_match:
+        if self._config["keep_prev"] and _kp_prev_shapes:
+            _new_is_empty = len(self.canvas.shapes) == 0
+            if _new_is_empty:
+                # New image has no annotations at all — copy every shape that was
+                # visible in the previous viewport, regardless of how many there were.
                 self.canvas.shapesBackups.append([])
-                self.loadShapes([ps], replace=False)
+                self.loadShapes(_kp_prev_shapes, replace=False)
                 self.setDirty()
+            elif len(_kp_prev_shapes) == 1:
+                # Zoomed-in single-shape focus: copy only if no existing shape
+                # overlaps the same region in the new image.
+                new_vp_shapes = [
+                    s for s in self.canvas.shapes
+                    if s.points
+                    and max(p.x() for p in s.points) >= _kp_vx0
+                    and min(p.x() for p in s.points) <= _kp_vx1
+                    and max(p.y() for p in s.points) >= _kp_vy0
+                    and min(p.y() for p in s.points) <= _kp_vy1
+                ]
+                ps = _kp_prev_shapes[0]
+                pxs = [p.x() for p in ps.points]
+                pys = [p.y() for p in ps.points]
+                px0_s, px1_s = min(pxs), max(pxs)
+                py0_s, py1_s = min(pys), max(pys)
+                has_match = any(
+                    max(p.x() for p in ns.points) >= px0_s
+                    and min(p.x() for p in ns.points) <= px1_s
+                    and max(p.y() for p in ns.points) >= py0_s
+                    and min(p.y() for p in ns.points) <= py1_s
+                    for ns in new_vp_shapes
+                )
+                if not has_match:
+                    self.canvas.shapesBackups.append([])
+                    self.loadShapes([ps], replace=False)
+                    self.setDirty()
+                else:
+                    self.setClean()
             else:
                 self.setClean()
         else:
@@ -2295,6 +2469,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 utils.img_data_to_pil(self.imageData),
                 self.onNewBrightnessContrast,
                 parent=self,
+                keep_setter=self.enableKeepPrevBrightness,
             )
             prev_b, prev_c = _base, _base
         else:
@@ -2322,6 +2497,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.toggleActions(True)
         self.canvas.setFocus()
         self.status(str(self.tr("Loaded %s")) % osp.basename(str(filename)))
+        if self.actions.deletePolygon.isChecked():  # type: ignore[attr-defined]
+            QTimer.singleShot(0, self._applyDeletePolygonMode)
+        if self.actions.replaceLabel.isChecked():  # type: ignore[attr-defined]
+            QTimer.singleShot(0, self._applyReplaceLabelMode)
+        if self.actions.replacePolygon.isChecked():  # type: ignore[attr-defined]
+            QTimer.singleShot(0, self._applyReplacePolygonMode)
+        if self.actions.separateLR.isChecked():  # type: ignore[attr-defined]
+            QTimer.singleShot(0, self._applySeparateLRMode)
         return True
 
     def resizeEvent(self, event):
@@ -2808,3 +2991,223 @@ class MainWindow(QtWidgets.QMainWindow):
                     images.append(relativePath)
         images = natsort.os_sorted(images)
         return images
+
+    # ── Annotation operation helpers ──────────────────────────────────────────
+
+    def _shapes_in_viewport(self):
+        if self.canvas.pixmap is None:
+            return []
+        vx0, vy0, vx1, vy1 = self._visible_image_rect()
+        visible = []
+        for s in self.canvas.shapes:
+            if not s.points:
+                continue
+            xs = [p.x() for p in s.points]
+            ys = [p.y() for p in s.points]
+            if max(xs) >= vx0 and min(xs) <= vx1 and max(ys) >= vy0 and min(ys) <= vy1:
+                visible.append(s)
+        return visible
+
+    def _current_label_file(self):
+        if not self.filename:
+            return None
+        label_file = osp.splitext(self.filename)[0] + ".json"
+        if self.output_dir:
+            label_file = osp.join(self.output_dir, osp.basename(label_file))
+        return label_file
+
+    # ── Annotation operations ─────────────────────────────────────────────────
+
+    def deletePolygonOp(self, checked):
+        # Toggle mode on/off — actual deletion is handled by _applyDeletePolygonMode on image load.
+        if checked:
+            self.status(self.tr("Auto Delete ON — annotation(s) in view will be deleted on each image switch"))
+        else:
+            self.status(self.tr("Auto Delete OFF"))
+
+    def _applyDeletePolygonMode(self):
+        if not self.actions.deletePolygon.isChecked():  # type: ignore[attr-defined]
+            return
+        multi = self.actions.deletePolygonMulti.isChecked()  # type: ignore[attr-defined]
+        visible = self._shapes_in_viewport()
+        if not visible:
+            return
+        if not multi and len(visible) != 1:
+            return
+
+        self.canvas._backupShapes(self.canvas.shapesBackups)
+        self.canvas.shapeRedoStack.clear()
+        visible_ids = {id(s) for s in visible}
+        removed = [s for s in self.canvas.shapes if id(s) in visible_ids]
+        self.canvas.shapes = [s for s in self.canvas.shapes if id(s) not in visible_ids]
+        self.remLabels(removed)
+        self.canvas.selectedShapes.clear()
+        self.canvas.update()
+        self.setDirty()
+        self.status(self.tr("Auto Delete: removed %d shape(s)") % len(removed))
+
+    def replaceLabelOp(self, checked):
+        if checked:
+            self.status(self.tr("Replace Label ON — annotation label in view will be replaced on each image switch"))
+        else:
+            self.status(self.tr("Replace Label OFF"))
+
+    def _applyReplaceLabelMode(self):
+        if not self.actions.replaceLabel.isChecked():  # type: ignore[attr-defined]
+            return
+        new_label = self.replaceLabelEdit.text().strip()
+        if not new_label:
+            return
+        visible = self._shapes_in_viewport()
+        if len(visible) != 1:
+            return
+        shape = visible[0]
+        old_label = shape.label
+        shape.label = new_label
+        self._update_shape_color(shape)
+        item = self.labelList.findItemByShape(shape)
+        if item is not None:
+            item.setText(
+                '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
+                    html.escape(new_label), *shape.fill_color.getRgb()[:3]
+                )
+            )
+        if self.uniqLabelList.findItemByLabel(new_label) is None:
+            uitem = self.uniqLabelList.createItemFromLabel(new_label)
+            self.uniqLabelList.addItem(uitem)
+            rgb = self._get_rgb_by_label(new_label)
+            self.uniqLabelList.setItemLabel(uitem, new_label, rgb)
+        self.canvas.update()
+        self.setDirty()
+        self.status(self.tr("Replace Label: '%s' → '%s'") % (old_label, new_label))
+
+    def replacePolygonOp(self, checked):
+        if checked:
+            visible = self._shapes_in_viewport()
+            if len(visible) != 1:
+                self.status(self.tr("Replace Polygon: need exactly 1 annotation in view to store template"))
+                self.actions.replacePolygon.setChecked(False)  # type: ignore[attr-defined]
+                return
+            src = visible[0]
+            self._replace_polygon_template = {
+                "label":  src.label,
+                "points": [[p.x(), p.y()] for p in src.points],
+            }
+            self.replacePolygonTemplateLabel.setText(src.label)
+            self.status(
+                self.tr("Replace Polygon ON: template '%s' (%d pts) — navigate to target images") % (
+                    src.label, len(src.points)
+                )
+            )
+        else:
+            self._replace_polygon_template = None
+            self.replacePolygonTemplateLabel.setText(self.tr("(none)"))
+            self.status(self.tr("Replace Polygon OFF"))
+
+    def _applyReplacePolygonMode(self):
+        if not self.actions.replacePolygon.isChecked():  # type: ignore[attr-defined]
+            return
+        if self._replace_polygon_template is None:
+            return
+        visible = self._shapes_in_viewport()
+        if len(visible) != 1:
+            return
+
+        tmpl    = self._replace_polygon_template
+        src_pts = tmpl["points"]
+        src_cx  = sum(p[0] for p in src_pts) / len(src_pts)
+        src_cy  = sum(p[1] for p in src_pts) / len(src_pts)
+
+        shape = visible[0]
+        tgt_pts = [[p.x(), p.y()] for p in shape.points]
+        tgt_cx  = sum(p[0] for p in tgt_pts) / len(tgt_pts)
+        tgt_cy  = sum(p[1] for p in tgt_pts) / len(tgt_pts)
+        dx, dy  = tgt_cx - src_cx, tgt_cy - src_cy
+
+        self.canvas._backupShapes(self.canvas.shapesBackups)
+        self.canvas.shapeRedoStack.clear()
+        shape.points = [QtCore.QPointF(p[0] + dx, p[1] + dy) for p in src_pts]
+        self.canvas.update()
+        self.setDirty()
+        self.status(self.tr("Replace Polygon: applied template to '%s'") % shape.label)
+
+    def separateLROp(self, checked):
+        if checked:
+            self.status(self.tr("Separate L/R ON — all annotations will be prefixed on each image switch"))
+        else:
+            self.status(self.tr("Separate L/R OFF"))
+
+    def _applySeparateLRMode(self):
+        if not self.actions.separateLR.isChecked():  # type: ignore[attr-defined]
+            return
+        if not self.canvas.shapes or self.canvas.pixmap is None:
+            return
+        mid = self.canvas.pixmap.width() // 2
+        self.canvas._backupShapes(self.canvas.shapesBackups)
+        self.canvas.shapeRedoStack.clear()
+        changed = 0
+        for shape in self.canvas.shapes:
+            lbl = shape.label
+            if lbl.startswith("left_") or lbl.startswith("right_"):
+                continue
+            pts = [[p.x(), p.y()] for p in shape.points]
+            if not pts:
+                continue
+            mx     = sum(p[0] for p in pts) / len(pts)
+            prefix = "right_" if mx <= mid else "left_"
+            shape.label = prefix + lbl
+            self._update_shape_color(shape)
+            item = self.labelList.findItemByShape(shape)
+            if item is not None:
+                item.setText(
+                    '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
+                        html.escape(shape.label), *shape.fill_color.getRgb()[:3]
+                    )
+                )
+            if self.uniqLabelList.findItemByLabel(shape.label) is None:
+                uitem = self.uniqLabelList.createItemFromLabel(shape.label)
+                self.uniqLabelList.addItem(uitem)
+                rgb = self._get_rgb_by_label(shape.label)
+                self.uniqLabelList.setItemLabel(uitem, shape.label, rgb)
+            changed += 1
+        if changed:
+            self.canvas.update()
+            self.setDirty()
+        self.status(self.tr("Separate L/R: %d shape(s) renamed") % changed)
+
+    def separateLRFolderOp(self):
+        if self.dirty:
+            self.saveFile()
+        label_file = self._current_label_file()
+        if not label_file:
+            self.status(self.tr("Separate L/R folder: no file loaded"))
+            return
+        ann_dir = osp.dirname(label_file)
+        total = 0
+        files = sorted(f for f in os.listdir(ann_dir) if f.endswith(".json"))
+        for fname in files:
+            fpath = osp.join(ann_dir, fname)
+            with open(fpath, encoding="utf-8") as fh:
+                data = json.load(fh)
+            mid     = data.get("imageWidth", 512) // 2
+            changed = 0
+            for shape in data.get("shapes", []):
+                lbl = shape.get("label", "")
+                if lbl.startswith("left_") or lbl.startswith("right_"):
+                    continue
+                pts = shape.get("points", [])
+                if not pts:
+                    continue
+                mx     = sum(p[0] for p in pts) / len(pts)
+                prefix = "right_" if mx <= mid else "left_"
+                shape["label"] = prefix + lbl
+                changed += 1
+            if changed:
+                with open(fpath, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=2, ensure_ascii=False)
+                total += changed
+        self.status(
+            self.tr("Separate L/R folder: %d shape(s) renamed across %d file(s)") % (total, len(files))
+        )
+        if self.filename:
+            self.loadFile(self.filename)

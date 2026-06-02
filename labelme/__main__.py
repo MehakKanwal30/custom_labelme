@@ -10,6 +10,7 @@ import traceback
 import yaml
 from loguru import logger
 from PyQt5 import QtCore
+from PyQt5 import QtGui
 from PyQt5 import QtWidgets
 
 from labelme import __appname__
@@ -93,6 +94,49 @@ def _handle_exception(exc_type, exc_value, exc_traceback):
     if app := QtWidgets.QApplication.instance():
         app.quit()
     sys.exit(1)
+
+
+def _apply_dark_palette(app):
+    app.setStyle("Fusion")
+    p = QtGui.QPalette()
+    # Base colours
+    _window      = QtGui.QColor(45,  45,  45)
+    _base        = QtGui.QColor(28,  28,  28)
+    _alt_base    = QtGui.QColor(38,  38,  38)
+    _button      = QtGui.QColor(55,  55,  55)
+    _text        = QtGui.QColor(220, 220, 220)
+    _bright_text = QtGui.QColor(255, 255, 255)
+    _disabled    = QtGui.QColor(110, 110, 110)
+    _highlight   = QtGui.QColor(42,  130, 218)
+    _dark        = QtGui.QColor(20,  20,  20)
+    _mid         = QtGui.QColor(35,  35,  35)
+    _shadow      = QtGui.QColor(10,  10,  10)
+    _tooltip_bg  = QtGui.QColor(60,  60,  60)
+
+    p.setColor(QtGui.QPalette.Window,          _window)
+    p.setColor(QtGui.QPalette.WindowText,      _text)
+    p.setColor(QtGui.QPalette.Base,            _base)
+    p.setColor(QtGui.QPalette.AlternateBase,   _alt_base)
+    p.setColor(QtGui.QPalette.ToolTipBase,     _tooltip_bg)
+    p.setColor(QtGui.QPalette.ToolTipText,     _text)
+    p.setColor(QtGui.QPalette.Text,            _text)
+    p.setColor(QtGui.QPalette.Button,          _button)
+    p.setColor(QtGui.QPalette.ButtonText,      _text)
+    p.setColor(QtGui.QPalette.BrightText,      _bright_text)
+    p.setColor(QtGui.QPalette.Link,            _highlight)
+    p.setColor(QtGui.QPalette.Highlight,       _highlight)
+    p.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor(0, 0, 0))
+    p.setColor(QtGui.QPalette.Dark,            _dark)
+    p.setColor(QtGui.QPalette.Mid,             _mid)
+    p.setColor(QtGui.QPalette.Shadow,          _shadow)
+    # Disabled state
+    p.setColor(QtGui.QPalette.Disabled, QtGui.QPalette.WindowText, _disabled)
+    p.setColor(QtGui.QPalette.Disabled, QtGui.QPalette.Text,       _disabled)
+    p.setColor(QtGui.QPalette.Disabled, QtGui.QPalette.ButtonText, _disabled)
+    p.setColor(QtGui.QPalette.Disabled, QtGui.QPalette.Highlight,  QtGui.QColor(80, 80, 80))
+    p.setColor(QtGui.QPalette.Disabled, QtGui.QPalette.HighlightedText, _disabled)
+
+    app.setPalette(p)
 
 
 def main():
@@ -242,6 +286,7 @@ def main():
         osp.dirname(osp.abspath(__file__)) + "/translate",
     )
     app = QtWidgets.QApplication(sys.argv)
+    _apply_dark_palette(app)
     app.setApplicationName(__appname__)
     app.setWindowIcon(newIcon("icon"))
     app.installTranslator(translator)

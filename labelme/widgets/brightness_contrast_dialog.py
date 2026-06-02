@@ -8,7 +8,7 @@ from PyQt5.QtGui import QImage
 class BrightnessContrastDialog(QtWidgets.QDialog):
     _base_value = 50
 
-    def __init__(self, img, callback, parent=None):
+    def __init__(self, img, callback, parent=None, keep_setter=None):
         super(BrightnessContrastDialog, self).__init__(parent)
         self.setModal(True)
         self.setWindowTitle("Brightness/Contrast")
@@ -66,11 +66,14 @@ class BrightnessContrastDialog(QtWidgets.QDialog):
         del layouts
 
         #EDITED BRIGHTNESS
-        # Add Reset button
         button_layout = QtWidgets.QHBoxLayout()
+        self.keep_brightness_btn = QtWidgets.QCheckBox("Keep Brightness")
+        if keep_setter is not None:
+            self.keep_brightness_btn.toggled.connect(keep_setter)
+        button_layout.addWidget(self.keep_brightness_btn)
+        button_layout.addStretch()
         reset_button = QtWidgets.QPushButton("Reset")
         reset_button.clicked.connect(self.resetValues)
-        button_layout.addStretch()
         button_layout.addWidget(reset_button)
         layout.addLayout(button_layout)
         #END
