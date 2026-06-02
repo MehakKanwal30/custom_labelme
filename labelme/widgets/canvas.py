@@ -141,6 +141,17 @@ class Canvas(QtWidgets.QWidget):
         self.show_pixel_grid = False
         #END
 
+        #EDITED PIXEL PAINT
+        self._paint_mask = None           # numpy bool (img_h, img_w)
+        self._paint_overlay = None        # QImage live preview
+        self._is_painting = False
+        self._is_erasing = False
+        self._paint_prev_pos = None       # (px, py) for Bresenham interpolation
+        self._paint_pixels_ordered = []   # painted pixel coords in order (unique)
+        self._paint_pixels_set = set()    # fast membership test
+        self._paint_undo_stack = []       # stroke-level undo snapshots
+        #END
+
     def fillDrawing(self):
         return self._fill_drawing
 
@@ -162,8 +173,13 @@ class Canvas(QtWidgets.QWidget):
             "linestrip",
             "ai_polygon",
             "ai_mask",
+            "pixelpaint",
         ]:
             raise ValueError("Unsupported createMode: %s" % value)
+        #EDITED PIXEL PAINT
+        if getattr(self, "_createMode", None) == "pixelpaint" and value != "pixelpaint":
+            self._cancelPaintMask()
+        #END
         self._createMode = value
 
     def set_ai_model_name(self, model_name: str) -> None:
@@ -248,6 +264,20 @@ class Canvas(QtWidgets.QWidget):
         self.mouseMoved.emit(pos)
         self.prevMovePoint = pos
         self.restoreCursor()
+
+        #EDITED PIXEL PAINT
+        if self.drawing() and self.createMode == "pixelpaint":
+            self.overrideCursor(CURSOR_DRAW)
+            if self._is_painting or self._is_erasing:
+                px, py = int(pos.x()), int(pos.y())
+                if self._paint_prev_pos is not None and self._paint_prev_pos != (px, py):
+                    self._paint_line(*self._paint_prev_pos, px, py, paint=self._is_painting)
+                else:
+                    self._paint_pixel(px, py, paint=self._is_painting)
+                self._paint_prev_pos = (px, py)
+                self.update()
+            return
+        #END
 
         #EDITED FREEHAND
         # pos: QtCore.QPointF = self.transformPos(ev.localPos())
@@ -441,6 +471,43 @@ class Canvas(QtWidgets.QWidget):
         #END
         # pos: QtCore.QPointF = self.transformPos(ev.localPos())
 
+        #EDITED PIXEL PAINT
+        if self.drawing() and self.createMode == "pixelpaint":
+            self._ensure_paint_mask()
+            px, py = int(pos.x()), int(pos.y())
+            if ev.button() == QtCore.Qt.LeftButton:
+                if ev.modifiers() & QtCore.Qt.ControlModifier:
+                    # Ctrl+LMB → finalise shape
+                    if self._paint_mask is not None and self._paint_mask.any():
+                        self._finalisePaintMask()
+                else:
+                    # Snapshot state before stroke for Ctrl+Z undo
+                    self._paint_undo_stack.append((
+                        self._paint_mask.copy(),
+                        list(self._paint_pixels_ordered),
+                        set(self._paint_pixels_set),
+                    ))
+                    self._is_painting = True
+                    self._is_erasing = False
+                    self._paint_pixel(px, py, paint=True)
+                    self._paint_prev_pos = (px, py)
+                    if self._paint_mask is not None and self._paint_mask.any():
+                        self.drawingPolygon.emit(True)
+            elif ev.button() == QtCore.Qt.RightButton:
+                # Snapshot state before erase stroke for Ctrl+Z undo
+                self._paint_undo_stack.append((
+                    self._paint_mask.copy(),
+                    list(self._paint_pixels_ordered),
+                    set(self._paint_pixels_set),
+                ))
+                self._is_erasing = True
+                self._is_painting = False
+                self._paint_pixel(px, py, paint=False)
+                self._paint_prev_pos = (px, py)
+            self.update()
+            return
+        #END
+
         #EDITED FREEHAND
         #LASSO
         if (
@@ -573,6 +640,14 @@ class Canvas(QtWidgets.QWidget):
             self.prevPoint = pos
 
     def mouseReleaseEvent(self, ev):
+        #EDITED PIXEL PAINT
+        if self.createMode == "pixelpaint" and (self._is_painting or self._is_erasing):
+            self._is_painting = False
+            self._is_erasing = False
+            self._paint_prev_pos = None
+            return
+        #END
+
         #EDITED FREEHAND
         #LASSO
         if self._is_freehand_drawing:
@@ -823,6 +898,13 @@ class Canvas(QtWidgets.QWidget):
             for y in range(y_min + 1, y_max):
                 p.drawLine(QtCore.QPointF(x_min, y), QtCore.QPointF(x_max, y))
         #END PIXEL GRID
+
+        #EDITED PIXEL PAINT — live overlay drawn in image-coordinate space
+        if getattr(self, "_paint_overlay", None) is not None:
+            p.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, False)
+            p.drawImage(QtCore.QPointF(0, 0), self._paint_overlay)
+            p.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        #END PIXEL PAINT
 
         p.scale(1 / self.scale, 1 / self.scale)
 
@@ -1147,6 +1229,18 @@ class Canvas(QtWidgets.QWidget):
         modifiers = ev.modifiers()
         key = ev.key()
         if self.drawing():
+            #EDITED PIXEL PAINT
+            if self.createMode == "pixelpaint":
+                if key == QtCore.Qt.Key_Return:  # type: ignore[attr-defined]
+                    if self._paint_mask is not None and self._paint_mask.any():
+                        self._finalisePaintMask()
+                elif key == QtCore.Qt.Key_Escape:  # type: ignore[attr-defined]
+                    had_mask = self._paint_mask is not None
+                    self._cancelPaintMask()
+                    if had_mask:
+                        self.drawingPolygon.emit(False)
+                return
+            #END
             if key == QtCore.Qt.Key_Escape and self.current:  # type: ignore[attr-defined]
                 self.current = None
                 self.drawingPolygon.emit(False)
@@ -1202,6 +1296,21 @@ class Canvas(QtWidgets.QWidget):
             self.current.points = self.current.points[0:1]
         elif self.createMode == "point":
             self.current = None
+        #EDITED PIXEL PAINT
+        elif self.createMode == "pixelpaint":
+            self.current = None
+            if hasattr(self, "_paint_mask_saved") and self._paint_mask_saved is not None:
+                self._paint_mask = self._paint_mask_saved
+                self._paint_overlay = self._paint_overlay_saved
+                self._paint_pixels_ordered = getattr(self, "_paint_pixels_ordered_saved", [])
+                self._paint_pixels_set = getattr(self, "_paint_pixels_set_saved", set())
+                self._paint_undo_stack = getattr(self, "_paint_undo_stack_saved", [])
+                for attr in ("_paint_mask_saved", "_paint_overlay_saved",
+                             "_paint_pixels_ordered_saved", "_paint_pixels_set_saved",
+                             "_paint_undo_stack_saved"):
+                    if hasattr(self, attr):
+                        delattr(self, attr)
+        #END
         self.drawingPolygon.emit(True)
 
     # def undoLastPoint(self):
@@ -1217,6 +1326,11 @@ class Canvas(QtWidgets.QWidget):
 
     #EDITED REDO
     def undoLastPoint(self):
+        #EDITED PIXEL PAINT
+        if self.createMode == "pixelpaint":
+            self._undoPaintStroke()
+            return
+        #END
         if not self.current or self.current.isClosed() or len(self.current) == 0:
             return
 
@@ -1257,9 +1371,6 @@ class Canvas(QtWidgets.QWidget):
     def undoShapeAction(self):
         if not self.shapesBackups:
             return
-        # Push current state to redo stack
-        # self._backupShapes(self.shapeRedoStack)
-        # Restore from undo stack
         last_state = self.shapesBackups.pop()
         self.shapes = [s.copy() for s in last_state]
         self.repaint()
@@ -1388,6 +1499,9 @@ class Canvas(QtWidgets.QWidget):
         self.pixmap = pixmap
         if clear_shapes:
             self.shapes = []
+            #EDITED PIXEL PAINT
+            self._cancelPaintMask()
+            #END
         self.update()
 
     def loadShapes(self, shapes, replace=True):
@@ -1421,7 +1535,153 @@ class Canvas(QtWidgets.QWidget):
         self.selectedShapes = []
         self.movingShape = False
         self.hShape = None
+        #EDITED PIXEL PAINT
+        self._paint_mask = None
+        self._paint_overlay = None
+        self._is_painting = False
+        self._is_erasing = False
+        self._paint_prev_pos = None
+        self._paint_pixels_ordered = []
+        self._paint_pixels_set = set()
+        self._paint_undo_stack = []
+        #END
         self.update()
+
+
+    #EDITED PIXEL PAINT
+
+    def _ensure_paint_mask(self):
+        if self._paint_mask is None and self.pixmap:
+            h = self.pixmap.height()
+            w = self.pixmap.width()
+            self._paint_mask = np.zeros((h, w), dtype=bool)
+            self._paint_overlay = QtGui.QImage(w, h, QtGui.QImage.Format_ARGB32)
+            self._paint_overlay.fill(QtGui.QColor(0, 0, 0, 0))
+            self._paint_pixels_ordered = []
+            self._paint_pixels_set = set()
+            self._paint_undo_stack = []
+
+    def _paint_pixel(self, px, py, paint=True):
+        if self._paint_mask is None or self._paint_overlay is None:
+            return
+        h, w = self._paint_mask.shape
+        if not (0 <= px < w and 0 <= py < h):
+            return
+        if self._paint_mask[py, px] == paint:
+            return
+        self._paint_mask[py, px] = paint
+        if paint:
+            self._paint_overlay.setPixel(px, py, QtGui.QColor(220, 60, 60, 180).rgba())
+            if (px, py) not in self._paint_pixels_set:
+                self._paint_pixels_ordered.append((px, py))
+                self._paint_pixels_set.add((px, py))
+        else:
+            self._paint_overlay.setPixel(px, py, 0)
+            self._paint_pixels_set.discard((px, py))
+            # Keep in ordered list; filtered at finalise time
+
+    def _rebuild_paint_overlay(self):
+        """Rebuild QImage overlay from scratch using numpy (efficient after undo)."""
+        if self._paint_mask is None:
+            self._paint_overlay = None
+            return
+        h, w = self._paint_mask.shape
+        arr = np.zeros((h, w), dtype=np.uint32)
+        paint_color = int(QtGui.QColor(220, 60, 60, 180).rgba())
+        arr[self._paint_mask] = paint_color
+        img = QtGui.QImage(arr.data, w, h, w * 4, QtGui.QImage.Format_ARGB32)
+        self._paint_overlay = img.copy()
+
+    def _paint_line(self, x0, y0, x1, y1, paint=True):
+        """Bresenham line — fills all pixels between consecutive mouse positions."""
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        while True:
+            self._paint_pixel(x0, y0, paint)
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
+
+    def _undoPaintStroke(self):
+        """Pop one stroke from the undo stack and restore state."""
+        if not self._paint_undo_stack:
+            return
+        mask_snap, ordered_snap, set_snap = self._paint_undo_stack.pop()
+        self._paint_mask = mask_snap
+        self._paint_pixels_ordered = ordered_snap
+        self._paint_pixels_set = set_snap
+        self._rebuild_paint_overlay()
+        if not self._paint_mask.any():
+            self.drawingPolygon.emit(False)
+        self.update()
+
+    def _finalisePaintMask(self):
+        if self._paint_mask is None or not self._paint_mask.any():
+            return
+
+        # Build point list: each painted pixel (in order) → center point
+        pts = [
+            QtCore.QPointF(float(px) + 0.5, float(py) + 0.5)
+            for (px, py) in self._paint_pixels_ordered
+            if (px, py) in self._paint_pixels_set
+        ]
+        if not pts:
+            return
+
+        shape = Shape(shape_type="polygon")
+        for pt in pts:
+            shape.points.append(pt)
+            shape.point_labels.append(1)
+        shape.close()
+
+        # Preserve full state so label-cancel can restore via undoLastLine
+        self._paint_mask_saved = self._paint_mask
+        self._paint_overlay_saved = self._paint_overlay
+        self._paint_pixels_ordered_saved = list(self._paint_pixels_ordered)
+        self._paint_pixels_set_saved = set(self._paint_pixels_set)
+        self._paint_undo_stack_saved = list(self._paint_undo_stack)
+
+        self._paint_mask = None
+        self._paint_overlay = None
+        self._paint_pixels_ordered = []
+        self._paint_pixels_set = set()
+        self._paint_undo_stack = []
+        self._is_painting = False
+        self._is_erasing = False
+        self._paint_prev_pos = None
+
+        self.shapes.append(shape)
+        self.storeShapes()
+        self.setHiding(False)
+        self.newShape.emit()
+        self.update()
+
+    def _cancelPaintMask(self):
+        self._paint_mask = None
+        self._paint_overlay = None
+        self._paint_pixels_ordered = []
+        self._paint_pixels_set = set()
+        self._paint_undo_stack = []
+        self._is_painting = False
+        self._is_erasing = False
+        self._paint_prev_pos = None
+        for attr in ("_paint_mask_saved", "_paint_overlay_saved",
+                     "_paint_pixels_ordered_saved", "_paint_pixels_set_saved",
+                     "_paint_undo_stack_saved"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+        self.update()
+
+    #END PIXEL PAINT
 
 
 def _update_shape_with_sam(

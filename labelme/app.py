@@ -195,6 +195,7 @@ class MainWindow(QtWidgets.QMainWindow):
         scrollArea = QtWidgets.QScrollArea()
         scrollArea.setWidget(self.canvas)
         scrollArea.setWidgetResizable(True)
+        self.scrollArea = scrollArea
         self.scrollBars = {
             Qt.Vertical: scrollArea.verticalScrollBar(),  # type: ignore[attr-defined]
             Qt.Horizontal: scrollArea.horizontalScrollBar(),  # type: ignore[attr-defined]
@@ -399,6 +400,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tr("Start drawing ai_mask. Ctrl+LeftClick ends creation."),
             enabled=False,
         )
+        #EDITED PIXEL PAINT
+        createPixelPaintMode = action(
+            self.tr("Pixel\nPaint"),
+            lambda: self.toggleDrawMode(False, createMode="pixelpaint"),
+            "Ctrl+R",
+            "color",
+            self.tr(
+                "Paint individual pixels. LMB drag = paint, RMB drag = erase. "
+                "Ctrl+LMB or Enter to confirm and assign a label."
+            ),
+            checkable=True,
+            enabled=False,
+        )
+        #END
         editMode = action(
             self.tr("Edit Polygons"),
             self.setEditMode,
@@ -779,6 +794,7 @@ class MainWindow(QtWidgets.QMainWindow):
             createLineStripMode=createLineStripMode,
             createAiPolygonMode=createAiPolygonMode,
             createAiMaskMode=createAiMaskMode,
+            createPixelPaintMode=createPixelPaintMode,
             zoom=zoom,
             zoomIn=zoomIn,
             zoomOut=zoomOut,
@@ -825,6 +841,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 createLineStripMode,
                 createAiPolygonMode,
                 createAiMaskMode,
+                createPixelPaintMode,
                 editMode,
                 edit,
                 duplicate,
@@ -845,6 +862,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 createLineStripMode,
                 createAiPolygonMode,
                 createAiMaskMode,
+                createPixelPaintMode,
                 editMode,
                 brightnessContrast,
             ),
@@ -995,6 +1013,9 @@ class MainWindow(QtWidgets.QMainWindow):
             None,
             createMode,
             editMode,
+            #EDITED PIXEL PAINT
+            createPixelPaintMode,
+            #END
             duplicate,
             delete,
             undo,
@@ -1487,7 +1508,25 @@ class MainWindow(QtWidgets.QMainWindow):
             "linestrip": self.actions.createLineStripMode,  # type: ignore[attr-defined]
             "ai_polygon": self.actions.createAiPolygonMode,  # type: ignore[attr-defined]
             "ai_mask": self.actions.createAiMaskMode,  # type: ignore[attr-defined]
+            "pixelpaint": self.actions.createPixelPaintMode,  # type: ignore[attr-defined]
         }
+
+        #EDITED PIXEL PAINT — auto-manage pixel grid
+        entering_pixelpaint = (not edit and createMode == "pixelpaint")
+        leaving_pixelpaint = (not entering_pixelpaint and getattr(self, "_in_pixelpaint_mode", False))
+        if entering_pixelpaint and not getattr(self, "_in_pixelpaint_mode", False):
+            self._in_pixelpaint_mode = True
+            self._pixelgrid_before_paint = self.actions.pixelGrid.isChecked()  # type: ignore[attr-defined]
+            self.actions.pixelGrid.setChecked(True)  # type: ignore[attr-defined]
+            self.togglePixelGrid(True)
+        elif leaving_pixelpaint:
+            self._in_pixelpaint_mode = False
+            prev = getattr(self, "_pixelgrid_before_paint", False)
+            if hasattr(self, "_pixelgrid_before_paint"):
+                del self._pixelgrid_before_paint
+            self.actions.pixelGrid.setChecked(prev)  # type: ignore[attr-defined]
+            self.togglePixelGrid(prev)
+        #END
 
         self.canvas.setEditing(edit)
         self.canvas.createMode = createMode
@@ -1934,6 +1973,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._last_scroll_v_ratio = bar.value() / bar.maximum()
         #END
 
+    def _visible_image_rect(self):
+        """Return (x_min, y_min, x_max, y_max) in image coords for the current viewport."""
+        if self.canvas.pixmap is None:
+            return (0, 0, float("inf"), float("inf"))
+        h_val = self.scrollBars[Qt.Horizontal].value()  # type: ignore[attr-defined]
+        v_val = self.scrollBars[Qt.Vertical].value()  # type: ignore[attr-defined]
+        vp = self.scrollArea.viewport()
+        vp_w = vp.width()
+        vp_h = vp.height()
+        s = self.canvas.scale
+        off = self.canvas.offsetToCenter()
+        return (
+            h_val / s - off.x(),
+            v_val / s - off.y(),
+            (h_val + vp_w) / s - off.x(),
+            (v_val + vp_h) / s - off.y(),
+        )
+
     def setZoom(self, value):
         self.actions.fitWidth.setChecked(False)  # type: ignore[attr-defined]
         self.actions.fitWindow.setChecked(False)  # type: ignore[attr-defined]
@@ -2070,6 +2127,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._last_scroll_v_ratio = v_bar.value() / v_bar.maximum()
         #END
 
+        #EDITED KEEP_PREV VIEWPORT
+        # Capture viewport rect and prev shapes before resetState() wipes the
+        # pixmap (canvas.pixmap becomes None after resetState, breaking offsetToCenter).
+        if self._config["keep_prev"]:
+            _kp_vx0, _kp_vy0, _kp_vx1, _kp_vy1 = self._visible_image_rect()
+            _kp_prev_shapes = []
+            for _s in self.canvas.shapes:
+                if not _s.points:
+                    continue
+                _xs = [p.x() for p in _s.points]
+                _ys = [p.y() for p in _s.points]
+                if max(_xs) >= _kp_vx0 and min(_xs) <= _kp_vx1 and max(_ys) >= _kp_vy0 and min(_ys) <= _kp_vy1:
+                    _kp_prev_shapes.append(_s.copy())
+        else:
+            _kp_prev_shapes = []
+            _kp_vx0 = _kp_vy0 = _kp_vx1 = _kp_vy1 = 0
+        #END
+
         self.resetState()
         self.canvas.setEnabled(False)
         if filename is None:
@@ -2130,10 +2205,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         self.image = image
         self.filename = filename
-        if self._config["keep_prev"]:
-            # Deep-copy so mutations on the new image don't bleed back into
-            # the previous image's shape objects.
-            prev_shapes = [s.copy() for s in self.canvas.shapes]
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
         flags = {k: False for k in self._config["flags"] or []}
         if self.labelFile:
@@ -2141,11 +2212,36 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.labelFile.flags is not None:
                 flags.update(self.labelFile.flags)
         self.loadFlags(flags)
-        if self._config["keep_prev"] and self.noShapes():
-            # Seed an empty baseline so Ctrl+Z can undo the inherited shapes.
-            self.canvas.shapesBackups.append([])
-            self.loadShapes(prev_shapes, replace=False)
-            self.setDirty()
+        if self._config["keep_prev"] and len(_kp_prev_shapes) == 1:
+            # Only copy when the viewport is focused on exactly one shape.
+            # Multiple shapes in view means the user is not specifically working
+            # on any single one, so nothing is auto-copied.
+            new_vp_shapes = [
+                s for s in self.canvas.shapes
+                if s.points
+                and max(p.x() for p in s.points) >= _kp_vx0
+                and min(p.x() for p in s.points) <= _kp_vx1
+                and max(p.y() for p in s.points) >= _kp_vy0
+                and min(p.y() for p in s.points) <= _kp_vy1
+            ]
+            ps = _kp_prev_shapes[0]
+            pxs = [p.x() for p in ps.points]
+            pys = [p.y() for p in ps.points]
+            px0_s, px1_s = min(pxs), max(pxs)
+            py0_s, py1_s = min(pys), max(pys)
+            has_match = any(
+                max(p.x() for p in ns.points) >= px0_s
+                and min(p.x() for p in ns.points) <= px1_s
+                and max(p.y() for p in ns.points) >= py0_s
+                and min(p.y() for p in ns.points) <= py1_s
+                for ns in new_vp_shapes
+            )
+            if not has_match:
+                self.canvas.shapesBackups.append([])
+                self.loadShapes([ps], replace=False)
+                self.setDirty()
+            else:
+                self.setClean()
         else:
             self.setClean()
         self.canvas.setEnabled(True)
