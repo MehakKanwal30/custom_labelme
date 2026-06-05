@@ -18,9 +18,12 @@ Adds dark mode, viewport-aware keep-previous, pixel painting, batch annotation o
 git clone https://github.com/MehakKanwal30/custom_labelme.git
 cd custom_labelme
 pip install -e .
+cp labelmerc ~/.labelmerc
 ```
 
 > Optional: create a virtual environment first (`python -m venv env && source env/bin/activate`).
+
+The `labelmerc` file sets custom keyboard shortcuts (e.g. `F` to delete). Without it the app still works but uses upstream defaults.
 
 ## Running
 

@@ -434,6 +434,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tr("Delete the selected polygons"),
             enabled=False,
         )
+        # Add Shift variants of every delete shortcut so Shift+<key> skips the confirmation popup.
+        _del_shortcuts = shortcuts["delete_polygon"]
+        if not isinstance(_del_shortcuts, (list, tuple)):
+            _del_shortcuts = [_del_shortcuts]
+        _shift_variants = [f"Shift+{s}" for s in _del_shortcuts if s]
+        delete.setShortcuts(list(_del_shortcuts) + _shift_variants)
         duplicate = action(
             self.tr("Duplicate Polygons"),
             self.duplicateSelectedShape,
@@ -2990,35 +2996,37 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setDirty()
 
     def deleteSelectedShape(self):
-        yes, no = QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No
-        msg = self.tr(
-            "You are about to permanently delete {} polygons, " "proceed anyway?"
-        ).format(len(self.canvas.selectedShapes))
-        if yes == QtWidgets.QMessageBox.warning(
-            self, self.tr("Attention"), msg, yes | no, yes
-        ):
+        shift_held = QtWidgets.QApplication.keyboardModifiers() & Qt.ShiftModifier  # type: ignore[attr-defined]
+        if not shift_held:
+            yes, no = QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No
+            msg = self.tr(
+                "You are about to permanently delete {} polygons, " "proceed anyway?"
+            ).format(len(self.canvas.selectedShapes))
+            if yes != QtWidgets.QMessageBox.warning(
+                self, self.tr("Attention"), msg, yes | no, yes
+            ):
+                return
+        #EDITED REDO
+        if self.canvas.selectedShapes:
+            # ✅ Backup before any modification
+            self.canvas._backupShapes(self.canvas.shapesBackups)
+            self.canvas.shapeRedoStack.clear()
 
-            #EDITED REDO
-            if self.canvas.selectedShapes:
-                # ✅ Backup before any modification
-                self.canvas._backupShapes(self.canvas.shapesBackups)
-                self.canvas.shapeRedoStack.clear()
+            # 🔸 Manually delete the shapes
+            for shape in list(self.canvas.selectedShapes):
+                if shape in self.canvas.shapes:
+                    self.canvas.shapes.remove(shape)
+                    self.remLabels([shape])
 
-                # 🔸 Manually delete the shapes
-                for shape in list(self.canvas.selectedShapes):
-                    if shape in self.canvas.shapes:
-                        self.canvas.shapes.remove(shape)
-                        self.remLabels([shape])
+            self.canvas.selectedShapes.clear()
+            self.canvas.update()
+        #END
 
-                self.canvas.selectedShapes.clear()
-                self.canvas.update()
-            #END
-
-            # self.remLabels(self.canvas.deleteSelected())
-            self.setDirty()
-            if self.noShapes():
-                for action in self.actions.onShapesPresent:  # type: ignore[attr-defined]
-                    action.setEnabled(False)
+        # self.remLabels(self.canvas.deleteSelected())
+        self.setDirty()
+        if self.noShapes():
+            for action in self.actions.onShapesPresent:  # type: ignore[attr-defined]
+                action.setEnabled(False)
 
     def copyShape(self):
         self.canvas.endMove(copy=True)

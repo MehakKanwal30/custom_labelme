@@ -558,7 +558,8 @@ class Canvas(QtWidgets.QWidget):
         #EDITED FREEHAND
         #LASSO
         if (
-            ev.button() == QtCore.Qt.LeftButton
+            self.drawing()
+            and ev.button() == QtCore.Qt.LeftButton
             and ev.modifiers() & QtCore.Qt.ShiftModifier
             and self.createMode in ["polygon", "linestrip"]
         ):
