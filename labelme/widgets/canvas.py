@@ -87,6 +87,10 @@ class Canvas(QtWidgets.QWidget):
         self._flip_debug = True
         #END
 
+        #EDITED ANNOTATION FOLLOW MOUSE
+        self.annotation_follow_mouse = False
+        #END
+
         #EDITED SHOW OG
         self.show_original = False
         #END
@@ -220,6 +224,35 @@ class Canvas(QtWidgets.QWidget):
     def isVisible(self, shape):  # type: ignore[override]
         return self.visible.get(shape, True)
 
+    def _shapes_in_viewport(self):
+        """Return visible shapes whose bounding box overlaps the current scroll-area viewport."""
+        if self.pixmap is None:
+            return [s for s in self.shapes if self.isVisible(s)]
+        # Navigate to the parent QScrollArea (canvas → viewport widget → scroll area)
+        vp_widget = self.parent()
+        sa = vp_widget.parent() if vp_widget is not None else None
+        if not isinstance(sa, QtWidgets.QAbstractScrollArea):
+            return [s for s in self.shapes if self.isVisible(s)]
+        h_val = sa.horizontalScrollBar().value()
+        v_val = sa.verticalScrollBar().value()
+        vp_w = sa.viewport().width()
+        vp_h = sa.viewport().height()
+        s = self.scale
+        off = self.offsetToCenter()
+        x0 = h_val / s - off.x()
+        y0 = v_val / s - off.y()
+        x1 = (h_val + vp_w) / s - off.x()
+        y1 = (v_val + vp_h) / s - off.y()
+        result = []
+        for shape in self.shapes:
+            if not self.isVisible(shape) or not shape.points:
+                continue
+            xs = [p.x() for p in shape.points]
+            ys = [p.y() for p in shape.points]
+            if max(xs) >= x0 and min(xs) <= x1 and max(ys) >= y0 and min(ys) <= y1:
+                result.append(shape)
+        return result
+
     def drawing(self):
         return self.mode == self.CREATE
 
@@ -294,6 +327,20 @@ class Canvas(QtWidgets.QWidget):
 
                 self.update()
             return
+        #END
+
+        #EDITED ANNOTATION FOLLOW MOUSE
+        if self.annotation_follow_mouse and not ev.buttons():
+            in_view = self._shapes_in_viewport()
+            if len(in_view) == 1:
+                shape = in_view[0]
+                if shape.points:
+                    cx = sum(p.x() for p in shape.points) / len(shape.points)
+                    cy = sum(p.y() for p in shape.points) / len(shape.points)
+                    shape.moveBy(pos - QtCore.QPointF(cx, cy))
+                    self.shapeMoved.emit()
+                    self.repaint()
+                    return
         #END
 
         is_shift_pressed = ev.modifiers() & QtCore.Qt.ShiftModifier  # type: ignore[attr-defined]

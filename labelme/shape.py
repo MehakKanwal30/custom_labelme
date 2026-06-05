@@ -163,6 +163,8 @@ class Shape(object):
             )
             return
 
+        while len(self.point_labels) < len(self.points):
+            self.point_labels.append(1)
         self.points.pop(i)
         self.point_labels.pop(i)
 

@@ -116,12 +116,29 @@ Toolbar toggle — copies annotations from the previous image to the next.
 ---
 
 ### Keep Brightness
-Toolbar toggle (also available as a checkbox inside the Brightness/Contrast dialog) — carries brightness and contrast settings across image switches.
+Toolbar toggle (also available as a checkbox inside the Brightness/Contrast dialog) — carries brightness and contrast settings across image switches.  
+The button lives in the main toolbar next to **Keep Annotation**.
+
+---
+
+### Follow Mouse
+`C` — when exactly **one annotation is geometrically inside the current viewport**, its centroid follows the mouse cursor on hover.  
+Works correctly even when the image has multiple annotations — only the count visible in the current zoom view matters.  
+Undo is committed when the toggle is turned off.
+
+---
+
+### Auto Advance
+`T` — starts a timer that automatically moves to the next image.
+
+- Set the interval (in seconds) with the spin box below the button (0.1 – 999, default 3 s).
+- Changing the value while the timer is running restarts it at the new interval immediately.
+- Press `T` again (or click the button) to stop.
 
 ---
 
 ### Annotation Operations
-Four toolbar buttons for batch editing. All operate on the **current image only** and work on annotations **visible in the zoomed viewport**.
+Five toolbar buttons for batch editing. All operate on the **current image only** and work on annotations **visible in the zoomed viewport**.
 
 #### Auto Delete
 Toggle. On each image switch, deletes the annotation in the current view.  
@@ -141,12 +158,16 @@ Click again to clear the template and turn off.
 Toggle. On each image switch, prefixes every annotation with `left_` or `right_` based on its mean x-position vs the image midline. Annotations already prefixed are skipped.  
 **Apply Folder** button: one-shot — applies the same operation to every JSON file in the current folder.
 
+> All annotation operations (except Separate L/R and Apply Folder) skip automatically if 0 or 2+ annotations are in the viewport.
+
 ---
 
 ## Keyboard Shortcut Reference
 
 | Feature | Shortcut |
 |---|---|
+| Next image | `D` |
+| Previous image | `A` |
 | Lasso start/continue | `Shift + LMB drag` |
 | Lasso end | `Ctrl + LMB` |
 | Pixel paint mode | `Ctrl+R` |
@@ -159,6 +180,9 @@ Toggle. On each image switch, prefixes every annotation with `left_` or `right_`
 | Flip polygon V | `Ctrl+Shift+V` |
 | Pixel grid | `X` |
 | Hide annotations | `G` |
+| Follow Mouse toggle | `C` |
+| Auto Advance toggle | `T` |
+| Toggle all polygons | `Shift+T` |
 
 ---
 

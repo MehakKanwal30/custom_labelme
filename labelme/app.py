@@ -527,6 +527,18 @@ class MainWindow(QtWidgets.QMainWindow):
         
         #END
 
+        #EDITED ANNOTATION FOLLOW MOUSE
+        annotationFollowMouse = action(
+            self.tr("Follow Mouse"),
+            self.toggleAnnotationFollowMouse,
+            "C",
+            None,
+            self.tr("When only one annotation is visible, its center follows the mouse cursor"),
+            checkable=True,
+            enabled=True,
+        )
+        #END
+
         #EDITED SHOW OG
         showOriginal = action(
             self.tr("&Show Original"),
@@ -754,7 +766,7 @@ class MainWindow(QtWidgets.QMainWindow):
         _adLayout.addWidget(self.deleteAllCheck)
         autoDeleteWidget.setDefaultWidget(_adContainer)
 
-        # Replace Label: button + new-label text box stacked in one toolbar widget
+        # Replace Label: button + old-label + new-label text boxes stacked in one toolbar widget
         replaceLabelWidget = QtWidgets.QWidgetAction(self)
         _rlContainer = QtWidgets.QWidget()
         _rlContainer.setFixedWidth(_OP_BTN_W)
@@ -765,13 +777,18 @@ class MainWindow(QtWidgets.QMainWindow):
         _rlBtn.setDefaultAction(replaceLabel)
         _rlBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
         _rlBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        _rlFont = QtGui.QFont()
+        _rlFont.setPointSize(_OP_SUB_PT)
+        self.replaceLabelOldEdit = QtWidgets.QLineEdit()
+        self.replaceLabelOldEdit.setPlaceholderText(self.tr("old label (opt)"))
+        self.replaceLabelOldEdit.setFont(_rlFont)
+        self.replaceLabelOldEdit.setFixedHeight(_OP_SUB_H)
         self.replaceLabelEdit = QtWidgets.QLineEdit()
         self.replaceLabelEdit.setPlaceholderText(self.tr("new label"))
-        _rlFont = self.replaceLabelEdit.font()
-        _rlFont.setPointSize(_OP_SUB_PT)
         self.replaceLabelEdit.setFont(_rlFont)
         self.replaceLabelEdit.setFixedHeight(_OP_SUB_H)
         _rlLayout.addWidget(_rlBtn)
+        _rlLayout.addWidget(self.replaceLabelOldEdit)
         _rlLayout.addWidget(self.replaceLabelEdit)
         replaceLabelWidget.setDefaultWidget(_rlContainer)
 
@@ -832,6 +849,53 @@ class MainWindow(QtWidgets.QMainWindow):
         _slLayout.addWidget(_slBtn)
         _slLayout.addWidget(_slFolderBtn)
         separateLRWidget.setDefaultWidget(_slContainer)
+        #END
+
+        #EDITED AUTO ADVANCE
+        autoAdvance = action(
+            self.tr("Auto\nAdvance"),
+            self.toggleAutoAdvance,
+            "T",
+            None,
+            self.tr("Automatically advance to the next image on a timer"),
+            checkable=True,
+            enabled=True,
+        )
+
+        autoAdvanceWidget = QtWidgets.QWidgetAction(self)
+        _aaContainer = QtWidgets.QWidget()
+        _aaContainer.setFixedWidth(_OP_BTN_W)
+        _aaLayout = QtWidgets.QVBoxLayout(_aaContainer)
+        _aaLayout.setContentsMargins(2, 1, 2, 1)
+        _aaLayout.setSpacing(1)
+        _aaBtn = QtWidgets.QToolButton()
+        _aaBtn.setDefaultAction(autoAdvance)
+        _aaBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _aaBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        _aaRow = QtWidgets.QHBoxLayout()
+        _aaRow.setContentsMargins(0, 0, 0, 0)
+        _aaRow.setSpacing(2)
+        _aaSecLabel = QtWidgets.QLabel(self.tr("sec:"))
+        _aaSecFont = _aaSecLabel.font()
+        _aaSecFont.setPointSize(_OP_SUB_PT)
+        _aaSecLabel.setFont(_aaSecFont)
+        _aaSecLabel.setFixedHeight(_OP_SUB_H)
+        self.autoAdvanceSpin = QtWidgets.QDoubleSpinBox()
+        self.autoAdvanceSpin.setFont(_aaSecFont)
+        self.autoAdvanceSpin.setFixedHeight(_OP_SUB_H)
+        self.autoAdvanceSpin.setRange(0.1, 999.0)
+        self.autoAdvanceSpin.setSingleStep(0.1)
+        self.autoAdvanceSpin.setDecimals(1)
+        self.autoAdvanceSpin.setValue(self._config.get("auto_advance_interval", 3.0))
+        self.autoAdvanceSpin.valueChanged.connect(self._onAutoAdvanceIntervalChanged)
+        _aaRow.addWidget(_aaSecLabel)
+        _aaRow.addWidget(self.autoAdvanceSpin)
+        _aaLayout.addWidget(_aaBtn)
+        _aaLayout.addLayout(_aaRow)
+        autoAdvanceWidget.setDefaultWidget(_aaContainer)
+
+        self._auto_advance_timer = QtCore.QTimer(self)
+        self._auto_advance_timer.timeout.connect(self.openNextImg)
         #END
 
         # Group zoom controls into a list for easier toggling.
@@ -949,6 +1013,8 @@ class MainWindow(QtWidgets.QMainWindow):
             separateLRWidget=separateLRWidget,
             replacePolygon=replacePolygon,
             separateLR=separateLR,
+            autoAdvance=autoAdvance,
+            autoAdvanceWidget=autoAdvanceWidget,
             zoomActions=zoomActions,
             openNextImg=openNextImg,
             openPrevImg=openPrevImg,
@@ -1089,6 +1155,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 showOriginal,
                 None,
                 #end
+                #EDITED ANNOTATION FOLLOW MOUSE
+                annotationFollowMouse,
+                None,
+                #END
                 brightnessContrast,
                 keepPrevBrightness,
                 toggle_keep_prev_mode,
@@ -1190,35 +1260,57 @@ class MainWindow(QtWidgets.QMainWindow):
         _kaLayout.addWidget(_kaBtn)
         keepAnnotationWidget.setDefaultWidget(_kaContainer)
 
+        keepBrightnessWidget = QtWidgets.QWidgetAction(self)
+        _kbContainer = QtWidgets.QWidget()
+        _kbContainer.setFixedWidth(_OP_BTN_W)
+        _kbLayout = QtWidgets.QVBoxLayout(_kbContainer)
+        _kbLayout.setContentsMargins(2, 1, 2, 1)
+        _kbBtn = QtWidgets.QToolButton()
+        _kbBtn.setDefaultAction(keepPrevBrightness)
+        _kbBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _kbBtn.setFixedSize(_OP_BTN_W - 4, _keep_btn_h)
+        _kbLayout.addWidget(_kbBtn)
+        keepBrightnessWidget.setDefaultWidget(_kbContainer)
+
+        #EDITED ANNOTATION FOLLOW MOUSE
+        followMouseWidget = QtWidgets.QWidgetAction(self)
+        _fmContainer = QtWidgets.QWidget()
+        _fmContainer.setFixedWidth(_OP_BTN_W)
+        _fmLayout = QtWidgets.QVBoxLayout(_fmContainer)
+        _fmLayout.setContentsMargins(2, 1, 2, 1)
+        _fmBtn = QtWidgets.QToolButton()
+        _fmBtn.setDefaultAction(annotationFollowMouse)
+        _fmBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _fmBtn.setFixedSize(_OP_BTN_W - 4, _keep_btn_h)
+        _fmLayout.addWidget(_fmBtn)
+        followMouseWidget.setDefaultWidget(_fmContainer)
+        #END
 
         self.tools = self.toolbar("Tools")
         self.actions.tool = (  # type: ignore[attr-defined]
             open_,
             opendir,
-            openPrevImg,
-            openNextImg,
-            save,
             deleteFile,
             None,
             createMode,
             editMode,
             createPixelPaintMode,
-            duplicate,
             delete,
-            undo,
             brightnessContrast,
             None,
             lasso,
             None,
             keepScaleWidget,
             keepAnnotationWidget,
+            keepBrightnessWidget,
+            followMouseWidget,
             None,
             autoDeleteWidget,
             replaceLabelWidget,
             replacePolygonWidget,
             separateLRWidget,
+            autoAdvanceWidget,
             None,
-            fitWindow,
             zoom,
         )
 
@@ -1592,6 +1684,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.update()
     #END
 
+    #EDITED ANNOTATION FOLLOW MOUSE
+    def toggleAnnotationFollowMouse(self, checked):
+        self.canvas.annotation_follow_mouse = checked
+        if not checked:
+            self.canvas.storeShapes()
+    #END
+
     #EDITED SHOW OG
     def toggleShowOriginal(self, checked):
         self.canvas.show_original = checked
@@ -1632,6 +1731,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Just repaint — don’t touch flips or brightness here
         self.canvas.update()
+    #END
+
+    #EDITED AUTO ADVANCE
+    def toggleAutoAdvance(self, checked):
+        if checked:
+            interval_ms = int(self.autoAdvanceSpin.value() * 1000)
+            self._auto_advance_timer.start(interval_ms)
+        else:
+            self._auto_advance_timer.stop()
+
+    def _onAutoAdvanceIntervalChanged(self, value):
+        self._config["auto_advance_interval"] = value
+        if self._auto_advance_timer.isActive():
+            self._auto_advance_timer.start(int(value * 1000))
     #END
 
     #EDITED PIXEL GRID
@@ -2436,42 +2549,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 flags.update(self.labelFile.flags)
         self.loadFlags(flags)
         if self._config["keep_prev"] and _kp_prev_shapes:
-            _new_is_empty = len(self.canvas.shapes) == 0
-            if _new_is_empty:
-                # New image has no annotations at all — copy every shape that was
-                # visible in the previous viewport, regardless of how many there were.
+            new_vp_has_shapes = any(
+                s.points
+                and max(p.x() for p in s.points) >= _kp_vx0
+                and min(p.x() for p in s.points) <= _kp_vx1
+                and max(p.y() for p in s.points) >= _kp_vy0
+                and min(p.y() for p in s.points) <= _kp_vy1
+                for s in self.canvas.shapes
+            )
+            if not new_vp_has_shapes:
                 self.canvas.shapesBackups.append([])
                 self.loadShapes(_kp_prev_shapes, replace=False)
                 self.setDirty()
-            elif len(_kp_prev_shapes) == 1:
-                # Zoomed-in single-shape focus: copy only if no existing shape
-                # overlaps the same region in the new image.
-                new_vp_shapes = [
-                    s for s in self.canvas.shapes
-                    if s.points
-                    and max(p.x() for p in s.points) >= _kp_vx0
-                    and min(p.x() for p in s.points) <= _kp_vx1
-                    and max(p.y() for p in s.points) >= _kp_vy0
-                    and min(p.y() for p in s.points) <= _kp_vy1
-                ]
-                ps = _kp_prev_shapes[0]
-                pxs = [p.x() for p in ps.points]
-                pys = [p.y() for p in ps.points]
-                px0_s, px1_s = min(pxs), max(pxs)
-                py0_s, py1_s = min(pys), max(pys)
-                has_match = any(
-                    max(p.x() for p in ns.points) >= px0_s
-                    and min(p.x() for p in ns.points) <= px1_s
-                    and max(p.y() for p in ns.points) >= py0_s
-                    and min(p.y() for p in ns.points) <= py1_s
-                    for ns in new_vp_shapes
-                )
-                if not has_match:
-                    self.canvas.shapesBackups.append([])
-                    self.loadShapes([ps], replace=False)
-                    self.setDirty()
-                else:
-                    self.setClean()
             else:
                 self.setClean()
         else:
@@ -3116,20 +3205,26 @@ class MainWindow(QtWidgets.QMainWindow):
         new_label = self.replaceLabelEdit.text().strip()
         if not new_label:
             return
+        old_label_filter = self.replaceLabelOldEdit.text().strip()
         visible = self._shapes_in_viewport()
-        if len(visible) != 1:
-            return
-        shape = visible[0]
-        old_label = shape.label
-        shape.label = new_label
-        self._update_shape_color(shape)
-        item = self.labelList.findItemByShape(shape)
-        if item is not None:
-            item.setText(
-                '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
-                    html.escape(new_label), *shape.fill_color.getRgb()[:3]
+        if old_label_filter:
+            targets = [s for s in visible if s.label == old_label_filter]
+            if not targets:
+                return
+        else:
+            if len(visible) != 1:
+                return
+            targets = visible
+        for shape in targets:
+            shape.label = new_label
+            self._update_shape_color(shape)
+            item = self.labelList.findItemByShape(shape)
+            if item is not None:
+                item.setText(
+                    '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
+                        html.escape(new_label), *shape.fill_color.getRgb()[:3]
+                    )
                 )
-            )
         if self.uniqLabelList.findItemByLabel(new_label) is None:
             uitem = self.uniqLabelList.createItemFromLabel(new_label)
             self.uniqLabelList.addItem(uitem)
@@ -3137,7 +3232,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.uniqLabelList.setItemLabel(uitem, new_label, rgb)
         self.canvas.update()
         self.setDirty()
-        self.status(self.tr("Replace Label: '%s' → '%s'") % (old_label, new_label))
+        self.status(self.tr("Replace Label: '%s' → '%s'") % (old_label_filter or targets[0].label, new_label))
 
     def replacePolygonOp(self, checked):
         if checked:
