@@ -186,6 +186,3 @@ Toggle. On each image switch, prefixes every annotation with `left_` or `right_`
 
 ---
 
-## Known Issues
-
-- If a `qtpy` import error appears on first run: `pip install qtpy`
