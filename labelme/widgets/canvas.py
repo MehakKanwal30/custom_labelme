@@ -431,7 +431,13 @@ class Canvas(QtWidgets.QWidget):
         # - Highlight vertex
         # Update shape/vertex fill and tooltip value accordingly.
         self.setToolTip(self.tr("Image"))
-        for shape in reversed([s for s in self.shapes if self.isVisible(s)]):
+        # Selected shapes get interaction priority so they remain reachable
+        # even when another annotation is layered on top.
+        selected_ids = set(id(s) for s in self.selectedShapes)
+        visible = [s for s in self.shapes if self.isVisible(s)]
+        priority = [s for s in self.selectedShapes if self.isVisible(s)]
+        rest = [s for s in reversed(visible) if id(s) not in selected_ids]
+        for shape in (priority + rest):
             # Look for a nearby vertex to highlight. If that fails,
             # check if we happen to be inside a shape.
             index = shape.nearestVertex(pos, self.epsilon)
@@ -782,7 +788,23 @@ class Canvas(QtWidgets.QWidget):
         if self.selectedVertex():  # A vertex is marked for selection.
             index, shape = self.hVertex, self.hShape
             shape.highlightVertex(index, shape.MOVE_VERTEX)  # type: ignore[union-attr]
+            # Ensure the vertex's shape is selected and stay selected after the drag.
+            if shape not in self.selectedShapes:
+                if multiple_selection_mode:
+                    self.selectionChanged.emit(self.selectedShapes + [shape])
+                else:
+                    self.selectionChanged.emit([shape])
+            return
         else:
+            # If the click lands on an already-selected shape, keep it selected
+            # even if another annotation is layered on top.
+            for shape in self.selectedShapes:
+                if self.isVisible(shape) and shape.containsPoint(point):
+                    self.setHiding()
+                    self.hShapeIsSelected = True
+                    self.calculateOffsets(point)
+                    return
+            # Otherwise pick the topmost shape under the cursor.
             for shape in reversed(self.shapes):
                 if self.isVisible(shape) and shape.containsPoint(point):
                     self.setHiding()
