@@ -545,6 +545,19 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         #END
 
+        #EDITED SELECTED SHAPE PRIORITY
+        selectedShapePriority = action(
+            self.tr("Selection\nPriority"),
+            self.toggleSelectedShapePriority,
+            "Z",
+            None,
+            self.tr("When on, hovering/clicking near points prioritizes the selected shape over shapes on top"),
+            checkable=True,
+            enabled=True,
+        )
+        selectedShapePriority.setChecked(True)
+        #END
+
         #EDITED SHOW OG
         showOriginal = action(
             self.tr("&Show Original"),
@@ -1165,6 +1178,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 annotationFollowMouse,
                 None,
                 #END
+                #EDITED SELECTED SHAPE PRIORITY
+                selectedShapePriority,
+                None,
+                #END
                 brightnessContrast,
                 keepPrevBrightness,
                 toggle_keep_prev_mode,
@@ -1290,6 +1307,20 @@ class MainWindow(QtWidgets.QMainWindow):
         _fmBtn.setFixedSize(_OP_BTN_W - 4, _keep_btn_h)
         _fmLayout.addWidget(_fmBtn)
         followMouseWidget.setDefaultWidget(_fmContainer)
+        #END
+
+        #EDITED SELECTED SHAPE PRIORITY
+        selectedShapePriorityWidget = QtWidgets.QWidgetAction(self)
+        _spContainer = QtWidgets.QWidget()
+        _spContainer.setFixedWidth(_OP_BTN_W)
+        _spLayout = QtWidgets.QVBoxLayout(_spContainer)
+        _spLayout.setContentsMargins(2, 1, 2, 1)
+        _spBtn = QtWidgets.QToolButton()
+        _spBtn.setDefaultAction(selectedShapePriority)
+        _spBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _spBtn.setFixedSize(_OP_BTN_W - 4, _keep_btn_h)
+        _spLayout.addWidget(_spBtn)
+        selectedShapePriorityWidget.setDefaultWidget(_spContainer)
         #END
 
         self.tools = self.toolbar("Tools")
@@ -1620,15 +1651,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     #EDITED FLIPPING
     def flipPolygonHorizontal(self):
-        # Flip horizontally all selected shapes
         if not self.canvas.selectedShapes:
             return
-
-        img = self.image
-        if img is None:
-            return
-
-        img_width = img.width()
 
         #EDITED REDO
         self.canvas._backupShapes(self.canvas.shapesBackups)
@@ -1636,27 +1660,17 @@ class MainWindow(QtWidgets.QMainWindow):
         #END
 
         for shape in self.canvas.selectedShapes:
-            flipped_points = []
-            for p in shape.points:
-                flipped_x = img_width - p.x()
-                flipped_points.append(QtCore.QPointF(flipped_x, p.y()))
-            shape.points = flipped_points
+            xs = [p.x() for p in shape.points]
+            cx = (min(xs) + max(xs)) / 2.0
+            shape.points = [QtCore.QPointF(2 * cx - p.x(), p.y()) for p in shape.points]
 
-        # Redraw canvas & mark as modified
         self.canvas.update()
         self.setDirty()
 
 
     def flipPolygonVertical(self):
-        # Flip vertically all selected shapes
         if not self.canvas.selectedShapes:
             return
-
-        img = self.image
-        if img is None:
-            return
-
-        img_height = img.height()
 
         #EDITED REDO
         self.canvas._backupShapes(self.canvas.shapesBackups)
@@ -1664,13 +1678,10 @@ class MainWindow(QtWidgets.QMainWindow):
         #END
 
         for shape in self.canvas.selectedShapes:
-            flipped_points = []
-            for p in shape.points:
-                flipped_y = img_height - p.y()
-                flipped_points.append(QtCore.QPointF(p.x(), flipped_y))
-            shape.points = flipped_points
+            ys = [p.y() for p in shape.points]
+            cy = (min(ys) + max(ys)) / 2.0
+            shape.points = [QtCore.QPointF(p.x(), 2 * cy - p.y()) for p in shape.points]
 
-        # Redraw canvas & mark as modified
         self.canvas.update()
         self.setDirty()
     #END
@@ -1678,15 +1689,18 @@ class MainWindow(QtWidgets.QMainWindow):
     #EDITED GHSOT FLIP
     def toggleFlipHorizontal(self, checked=None):
         if checked is None:
-            # When triggered by shortcut, Qt passes no checked state
             checked = not getattr(self.canvas, "flip_horizontal", False)
         self.canvas.flip_horizontal = checked
+        h_bar = self.scrollBars[Qt.Horizontal]  # type: ignore[attr-defined]
+        self.setScroll(Qt.Horizontal, h_bar.maximum() - h_bar.value())  # type: ignore[attr-defined]
         self.canvas.update()
 
     def toggleFlipVertical(self, checked=None):
         if checked is None:
             checked = not getattr(self.canvas, "flip_vertical", False)
         self.canvas.flip_vertical = checked
+        v_bar = self.scrollBars[Qt.Vertical]  # type: ignore[attr-defined]
+        self.setScroll(Qt.Vertical, v_bar.maximum() - v_bar.value())  # type: ignore[attr-defined]
         self.canvas.update()
     #END
 
@@ -1697,45 +1711,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.canvas.storeShapes()
     #END
 
+    #EDITED SELECTED SHAPE PRIORITY
+    def toggleSelectedShapePriority(self, checked):
+        self.canvas.selected_shape_priority = checked
+    #END
+
     #EDITED SHOW OG
     def toggleShowOriginal(self, checked):
         self.canvas.show_original = checked
-        if checked:
-            # Save zoom mode, scale, and scroll position as ratios
+        if getattr(self.canvas, "flip_horizontal", False):
             h_bar = self.scrollBars[Qt.Horizontal]  # type: ignore[attr-defined]
+            self.setScroll(Qt.Horizontal, h_bar.maximum() - h_bar.value())  # type: ignore[attr-defined]
+        if getattr(self.canvas, "flip_vertical", False):
             v_bar = self.scrollBars[Qt.Vertical]  # type: ignore[attr-defined]
-            h_ratio = h_bar.value() / h_bar.maximum() if h_bar.maximum() > 0 else 0.0
-            v_ratio = v_bar.value() / v_bar.maximum() if v_bar.maximum() > 0 else 0.0
-            self._prev_zoom_state = (self.zoomMode, self.canvas.scale, h_ratio, v_ratio)
-            try:
-                self.setFitWindow(True)
-            except ZeroDivisionError:
-                pass
-        else:
-            # Restore zoom and scroll
-            if hasattr(self, "_prev_zoom_state"):
-                prev_mode, prev_scale, prev_h_ratio, prev_v_ratio = self._prev_zoom_state
-                self.zoomMode = prev_mode
-                factor = prev_scale / self.canvas.scale
-                if factor != 1.0:
-                    self.addZoom(factor)
-                if prev_mode == self.FIT_WINDOW:
-                    try:
-                        self.setFitWindow(True)
-                    except ZeroDivisionError:
-                        pass
-                elif prev_mode == self.FIT_WIDTH:
-                    self.setFitWidth(True)
-                # Force canvas to correct size so scrollbar maxima are accurate,
-                # then restore scroll position from saved ratios.
-                self.paintCanvas()
-                h_bar = self.scrollBars[Qt.Horizontal]  # type: ignore[attr-defined]
-                v_bar = self.scrollBars[Qt.Vertical]  # type: ignore[attr-defined]
-                self.setScroll(Qt.Horizontal, int(prev_h_ratio * h_bar.maximum()))  # type: ignore[attr-defined]
-                self.setScroll(Qt.Vertical, int(prev_v_ratio * v_bar.maximum()))  # type: ignore[attr-defined]
-                del self._prev_zoom_state
-
-        # Just repaint — don’t touch flips or brightness here
+            self.setScroll(Qt.Vertical, v_bar.maximum() - v_bar.value())  # type: ignore[attr-defined]
         self.canvas.update()
     #END
 
@@ -2482,9 +2471,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 _ys = [p.y() for p in _s.points]
                 if max(_xs) >= _kp_vx0 and min(_xs) <= _kp_vx1 and max(_ys) >= _kp_vy0 and min(_ys) <= _kp_vy1:
                     _kp_prev_shapes.append(_s.copy())
+            self._kp_pending_shapes = _kp_prev_shapes
+            self._kp_pending_vp = (_kp_vx0, _kp_vy0, _kp_vx1, _kp_vy1)
         else:
             _kp_prev_shapes = []
-            _kp_vx0 = _kp_vy0 = _kp_vx1 = _kp_vy1 = 0
+            self._kp_pending_shapes = []
+            self._kp_pending_vp = (0, 0, 0, 0)
         #END
 
         self.resetState()
@@ -2554,23 +2546,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.labelFile.flags is not None:
                 flags.update(self.labelFile.flags)
         self.loadFlags(flags)
-        if self._config["keep_prev"] and _kp_prev_shapes:
-            new_vp_has_shapes = any(
-                s.points
-                and max(p.x() for p in s.points) >= _kp_vx0
-                and min(p.x() for p in s.points) <= _kp_vx1
-                and max(p.y() for p in s.points) >= _kp_vy0
-                and min(p.y() for p in s.points) <= _kp_vy1
-                for s in self.canvas.shapes
-            )
-            if not new_vp_has_shapes:
-                self.canvas.shapesBackups.append([])
-                self.loadShapes(_kp_prev_shapes, replace=False)
-                self.setDirty()
-            else:
-                self.setClean()
-        else:
-            self.setClean()
+        self.setClean()
         self.canvas.setEnabled(True)
 
         #EDITED HIDE ANNOTATIONS
@@ -2652,6 +2628,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status(str(self.tr("Loaded %s")) % osp.basename(str(filename)))
         if self.actions.deletePolygon.isChecked():  # type: ignore[attr-defined]
             QTimer.singleShot(0, self._applyDeletePolygonMode)
+        if self._config["keep_prev"]:
+            QTimer.singleShot(0, self._applyKeepPrevMode)
         if self.actions.replaceLabel.isChecked():  # type: ignore[attr-defined]
             QTimer.singleShot(0, self._applyReplaceLabelMode)
         if self.actions.replacePolygon.isChecked():  # type: ignore[attr-defined]
@@ -3172,6 +3150,25 @@ class MainWindow(QtWidgets.QMainWindow):
         return label_file
 
     # ── Annotation operations ─────────────────────────────────────────────────
+
+    def _applyKeepPrevMode(self):
+        pending = getattr(self, "_kp_pending_shapes", [])
+        if not pending:
+            return
+        _kp_vx0, _kp_vy0, _kp_vx1, _kp_vy1 = getattr(self, "_kp_pending_vp", (0, 0, 0, 0))
+        new_vp_has_shapes = any(
+            s.points
+            and max(p.x() for p in s.points) >= _kp_vx0
+            and min(p.x() for p in s.points) <= _kp_vx1
+            and max(p.y() for p in s.points) >= _kp_vy0
+            and min(p.y() for p in s.points) <= _kp_vy1
+            for s in self.canvas.shapes
+        )
+        if not new_vp_has_shapes:
+            self.canvas.shapesBackups.append([])
+            self.loadShapes(pending, replace=False)
+            self.setDirty()
+        self._kp_pending_shapes = []
 
     def deletePolygonOp(self, checked):
         # Toggle mode on/off — actual deletion is handled by _applyDeletePolygonMode on image load.

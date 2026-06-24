@@ -99,6 +99,7 @@ class Canvas(QtWidgets.QWidget):
         self.lasso_step = 2.0
         #END
         
+        self.selected_shape_priority = True
         self.current = None
         self.selectedShapes = []  # save the selected shapes here
         self.selectedShapesCopy = []
@@ -431,13 +432,15 @@ class Canvas(QtWidgets.QWidget):
         # - Highlight vertex
         # Update shape/vertex fill and tooltip value accordingly.
         self.setToolTip(self.tr("Image"))
-        # Selected shapes get interaction priority so they remain reachable
-        # even when another annotation is layered on top.
         selected_ids = set(id(s) for s in self.selectedShapes)
         visible = [s for s in self.shapes if self.isVisible(s)]
-        priority = [s for s in self.selectedShapes if self.isVisible(s)]
-        rest = [s for s in reversed(visible) if id(s) not in selected_ids]
-        for shape in (priority + rest):
+        if self.selected_shape_priority and self.selectedShapes:
+            priority = [s for s in self.selectedShapes if self.isVisible(s)]
+            rest = [s for s in reversed(visible) if id(s) not in selected_ids]
+            ordered = priority + rest
+        else:
+            ordered = list(reversed(visible))
+        for shape in ordered:
             # Look for a nearby vertex to highlight. If that fails,
             # check if we happen to be inside a shape.
             index = shape.nearestVertex(pos, self.epsilon)
@@ -796,14 +799,14 @@ class Canvas(QtWidgets.QWidget):
                     self.selectionChanged.emit([shape])
             return
         else:
-            # If the click lands on an already-selected shape, keep it selected
-            # even if another annotation is layered on top.
-            for shape in self.selectedShapes:
-                if self.isVisible(shape) and shape.containsPoint(point):
-                    self.setHiding()
-                    self.hShapeIsSelected = True
-                    self.calculateOffsets(point)
-                    return
+            # If priority mode is on and a selected shape is under the cursor, keep it selected.
+            if self.selected_shape_priority:
+                for shape in self.selectedShapes:
+                    if self.isVisible(shape) and shape.containsPoint(point):
+                        self.setHiding()
+                        self.hShapeIsSelected = True
+                        self.calculateOffsets(point)
+                        return
             # Otherwise pick the topmost shape under the cursor.
             for shape in reversed(self.shapes):
                 if self.isVisible(shape) and shape.containsPoint(point):

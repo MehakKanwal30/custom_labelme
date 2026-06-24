@@ -1,7 +1,7 @@
 import PIL.Image
 import PIL.ImageEnhance
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtGui import QImage
 
 
@@ -76,6 +76,27 @@ class BrightnessContrastDialog(QtWidgets.QDialog):
         reset_button.clicked.connect(self.resetValues)
         button_layout.addWidget(reset_button)
         layout.addLayout(button_layout)
+
+        # Preset slots: [brightness_value, contrast_value] or None if unset
+        self._settings = QSettings("labelme", "BrightnessContrastDialog")
+        self._presets = [None, None]
+        self._preset_btns = []
+        for i in range(2):
+            b = self._settings.value(f"preset_{i}_brightness")
+            c = self._settings.value(f"preset_{i}_contrast")
+            if b is not None and c is not None:
+                self._presets[i] = (int(b), int(c))
+
+            preset_layout = QtWidgets.QHBoxLayout()
+            apply_btn = QtWidgets.QPushButton(f"Preset {i + 1}")
+            apply_btn.setEnabled(self._presets[i] is not None)
+            apply_btn.clicked.connect(lambda checked, idx=i: self._applyPreset(idx))
+            save_btn = QtWidgets.QPushButton(f"Save to Preset {i + 1}")
+            save_btn.clicked.connect(lambda checked, idx=i: self._savePreset(idx))
+            preset_layout.addWidget(apply_btn)
+            preset_layout.addWidget(save_btn)
+            layout.addLayout(preset_layout)
+            self._preset_btns.append(apply_btn)
         #END
 
         self.setLayout(layout)
@@ -125,5 +146,20 @@ class BrightnessContrastDialog(QtWidgets.QDialog):
         self.img = img
         # Re-apply current brightness/contrast to the new image
         self.onNewValue()
+
+    def _savePreset(self, idx):
+        b = self.slider_brightness.value()
+        c = self.slider_contrast.value()
+        self._presets[idx] = (b, c)
+        self._settings.setValue(f"preset_{idx}_brightness", b)
+        self._settings.setValue(f"preset_{idx}_contrast", c)
+        self._preset_btns[idx].setEnabled(True)
+
+    def _applyPreset(self, idx):
+        if self._presets[idx] is None:
+            return
+        brightness_val, contrast_val = self._presets[idx]
+        self.slider_brightness.setValue(brightness_val)
+        self.slider_contrast.setValue(contrast_val)
 
     #END
