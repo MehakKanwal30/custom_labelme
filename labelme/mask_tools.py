@@ -24,6 +24,16 @@ LABEL_COLORS = {
 }
 
 
+def output_dir_for(image_path, kind, out_root=None, base_dir=None):
+    """Folder that holds this image's masks (kind='masks') or overlays ('overlays').
+
+    Default (no out_root): next to the image. With out_root: <out_root>/<kind>, flat
+    (no per-image subfolders). base_dir is kept for call compatibility."""
+    if not out_root:
+        return osp.join(osp.dirname(osp.abspath(image_path)), kind)
+    return osp.normpath(osp.join(out_root, kind))
+
+
 def list_images(folder):
     return sorted(
         f for f in os.listdir(folder)
@@ -106,7 +116,8 @@ def _multiclass_mask(shapes, w, h, label_values=None):
     return mask, skipped
 
 
-def generate_masks(image_paths, json_dir=None, progress=None, label_values=None):
+def generate_masks(image_paths, json_dir=None, progress=None, label_values=None,
+                   out_root=None, base_dir=None):
     """Write <image dir>/masks/<stem>_mask.png for every image path given.
 
     json_dir overrides where JSONs are read from (labelme output dir).
@@ -114,14 +125,20 @@ def generate_masks(image_paths, json_dir=None, progress=None, label_values=None)
     """
     image_paths = list(image_paths)
     result = dict(written=0, black=0, skipped_labels=set(), out_dirs=set(),
-                  cancelled=False, failed=0, total=len(image_paths))
+                  cancelled=False, failed=0, total=len(image_paths), collisions=[])
+    seen = set()
     for i, path in enumerate(image_paths):
         if progress and progress(i, len(image_paths), osp.basename(path)) is False:
             result["cancelled"] = True
             break
         folder, fname = osp.split(path)
         stem = osp.splitext(fname)[0]
-        out_dir = osp.join(folder, MASKS_DIRNAME)
+        out_dir = output_dir_for(path, MASKS_DIRNAME, out_root, base_dir)
+        target = osp.join(out_dir, f"{stem}_mask.png")
+        if target in seen:  # same file name from another subfolder, flat output
+            result["collisions"].append(path)
+            continue
+        seen.add(target)
         os.makedirs(out_dir, exist_ok=True)
         img = _read_image(path)
         if img is None:
@@ -166,18 +183,19 @@ def _draw_outlines(image, mask, thickness):
     return image
 
 
-def generate_overlays(image_paths, thickness=1, progress=None):
+def generate_overlays(image_paths, thickness=1, progress=None, out_root=None, base_dir=None):
     """Draw outlines from <image dir>/masks onto each image -> <image dir>/overlays."""
     image_paths = list(image_paths)
     result = dict(written=0, missing_masks=0, failed=0, out_dirs=set(),
-                  cancelled=False, total=len(image_paths))
+                  cancelled=False, total=len(image_paths), collisions=[])
+    seen = set()
     for i, path in enumerate(image_paths):
         if progress and progress(i, len(image_paths), osp.basename(path)) is False:
             result["cancelled"] = True
             break
         folder, fname = osp.split(path)
         stem = osp.splitext(fname)[0]
-        mask_path = osp.join(folder, MASKS_DIRNAME, f"{stem}_mask.png")
+        mask_path = osp.join(output_dir_for(path, MASKS_DIRNAME, out_root, base_dir), f"{stem}_mask.png")
         if not osp.exists(mask_path):
             result["missing_masks"] += 1
             continue
@@ -188,7 +206,12 @@ def generate_overlays(image_paths, thickness=1, progress=None):
             continue
         if mask.shape[:2] != image.shape[:2]:
             mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
-        out_dir = osp.join(folder, OVERLAYS_DIRNAME)
+        out_dir = output_dir_for(path, OVERLAYS_DIRNAME, out_root, base_dir)
+        target = osp.join(out_dir, f"{stem}.png")
+        if target in seen:
+            result["collisions"].append(path)
+            continue
+        seen.add(target)
         os.makedirs(out_dir, exist_ok=True)
         _write_image(osp.join(out_dir, f"{stem}.png"), _draw_outlines(image, mask, thickness))
         result["written"] += 1

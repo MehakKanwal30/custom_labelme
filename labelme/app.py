@@ -997,6 +997,27 @@ class MainWindow(QtWidgets.QMainWindow):
             withThickness=True,
         )
 
+        # Output path button + label showing where masks/overlays go
+        outputPathWidget = QtWidgets.QWidgetAction(self)
+        _opContainer = QtWidgets.QWidget()
+        _opContainer.setFixedWidth(_OP_BTN_W)
+        _opLayout = QtWidgets.QVBoxLayout(_opContainer)
+        _opLayout.setContentsMargins(2, 1, 2, 1)
+        _opLayout.setSpacing(1)
+        _opBtn = QtWidgets.QPushButton(self.tr("Output Path..."))
+        _opBtn.setToolTip(self.tr("Choose where masks/ and overlays/ are written"))
+        _opBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        _opBtn.clicked.connect(self.chooseMaskOutputPath)
+        self.maskOutputLabel = QtWidgets.QLabel()
+        _opFont = self.maskOutputLabel.font()
+        _opFont.setPointSize(_OP_SUB_PT)
+        self.maskOutputLabel.setFont(_opFont)
+        self.maskOutputLabel.setFixedHeight(_OP_SUB_H)
+        _opLayout.addWidget(_opBtn)
+        _opLayout.addWidget(self.maskOutputLabel)
+        outputPathWidget.setDefaultWidget(_opContainer)
+        self._mask_output_dir = ""
+
         # Compare view toggles: Show Mask / Show Overlay beside the main image
         showViewsWidget = QtWidgets.QWidgetAction(self)
         _svContainer = QtWidgets.QWidget()
@@ -1453,6 +1474,7 @@ class MainWindow(QtWidgets.QMainWindow):
             None,
             generateMaskWidget,
             generateOverlayWidget,
+            outputPathWidget,
             None,
             showViewsWidget,
         ])
@@ -1519,6 +1541,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # XXX: Could be completely declarative.
         # Restore application settings.
         self.settings = QtCore.QSettings("labelme", "labelme")
+        # output path is per-session: always start from the default, drop any value saved by older builds
+        self.settings.remove("mask/output_dir")
+        self._mask_output_dir = ""
+        self._refreshMaskOutputLabel()
         self.recentFiles = self.settings.value("recentFiles", []) or []
         size = self.settings.value("window/size", QtCore.QSize(600, 500))
         position = self.settings.value("window/position", QtCore.QPoint(0, 0))
@@ -2849,6 +2875,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.paintCanvas()
         self._updateReferenceViews()
+        self._refreshMaskOutputLabel()
         self.addRecentFile(self.filename)
         self.toggleActions(True)
         self.canvas.setFocus()
@@ -3572,10 +3599,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.maskView.setVisible(showMask)
         self.overlayView.setVisible(showOverlay)
         if self.filename:
-            folder = osp.dirname(self.filename)
+            from labelme import mask_tools
             stem = osp.splitext(osp.basename(self.filename))[0]
-            self.maskView.setImagePath(osp.join(folder, "masks", stem + "_mask.png"))
-            self.overlayView.setImagePath(osp.join(folder, "overlays", stem + ".png"))
+            root, base = self._mask_output_dir, self.lastOpenDir
+            self.maskView.setImagePath(osp.join(
+                mask_tools.output_dir_for(self.filename, "masks", root, base), stem + "_mask.png"))
+            self.overlayView.setImagePath(osp.join(
+                mask_tools.output_dir_for(self.filename, "overlays", root, base), stem + ".png"))
         if showMask or showOverlay:
             n = 1 + int(showMask) + int(showOverlay)
             total = max(self.viewSplitter.width(), n)
@@ -3634,6 +3664,66 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             dlg.close()
 
+    def _defaultMaskOutputText(self):
+        """Default output location, shown for the current image (or generically)."""
+        if self.filename:
+            folder = osp.dirname(osp.abspath(self.filename))
+            return "%s/{masks,overlays}" % folder
+        return self.tr("<image folder>/{masks,overlays}")
+
+    def _refreshMaskOutputLabel(self):
+        if not hasattr(self, "maskOutputLabel"):
+            return
+        if self._mask_output_dir:
+            text, tip = osp.basename(self._mask_output_dir.rstrip("/")) or self._mask_output_dir, self._mask_output_dir
+        else:
+            text, tip = self.tr("default: next to images"), self._defaultMaskOutputText()
+        self.maskOutputLabel.setText(text)
+        self.maskOutputLabel.setToolTip(tip)
+
+    def chooseMaskOutputPath(self):
+        """Small dialog: shows the current/default output path, lets you browse or reset."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(self.tr("Mask / overlay output path"))
+        dlg.setMinimumWidth(560)
+        lay = QtWidgets.QVBoxLayout(dlg)
+        lay.addWidget(QtWidgets.QLabel(self.tr("Default: next to each image, in its own masks/ and overlays/ folders.")))
+        default = QtWidgets.QLineEdit(self._defaultMaskOutputText())
+        default.setReadOnly(True)
+        default.setEnabled(False)
+        lay.addWidget(default)
+        lay.addWidget(QtWidgets.QLabel(self.tr("Custom output folder (leave empty for default):")))
+        row = QtWidgets.QHBoxLayout()
+        edit = QtWidgets.QLineEdit(self._mask_output_dir)
+        edit.setPlaceholderText(self.tr("default (next to images)"))
+        browse = QtWidgets.QPushButton(self.tr("Browse..."))
+        reset = QtWidgets.QPushButton(self.tr("Reset to default"))
+
+        def _browse():
+            start = edit.text() or (osp.dirname(self.filename) if self.filename else "")
+            d = QtWidgets.QFileDialog.getExistingDirectory(dlg, self.tr("Select output folder"), start)
+            if d:
+                edit.setText(d)
+
+        browse.clicked.connect(_browse)
+        reset.clicked.connect(edit.clear)
+        row.addWidget(edit, 1)
+        row.addWidget(browse)
+        row.addWidget(reset)
+        lay.addLayout(row)
+        lay.addWidget(QtWidgets.QLabel(self.tr(
+            "With a custom folder, files go directly into <folder>/masks/ and <folder>/overlays/\n"
+            "(no subfolders). Images with the same file name in different folders will collide.")))
+        box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        self._mask_output_dir = osp.abspath(edit.text().strip()) if edit.text().strip() else ""
+        self._refreshMaskOutputLabel()
+        self._updateReferenceViews()
+
     def _askMaskLabelValues(self, images, json_dir):
         """Show the label -> mask value dialog. Returns {label: value} or None if cancelled."""
         from labelme import mask_tools
@@ -3672,6 +3762,7 @@ class MainWindow(QtWidgets.QMainWindow):
             res = self._runWithProgress(
                 self.tr("Generating masks"), mask_tools.generate_masks, images,
                 json_dir=json_dir, label_values=label_values,
+                out_root=self._mask_output_dir, base_dir=self.lastOpenDir,
             )
         except Exception as e:
             logger.exception("Generate mask failed")
@@ -3683,6 +3774,8 @@ class MainWindow(QtWidgets.QMainWindow):
             msg += self.tr("  %d image(s) unreadable") % res["failed"]
         if res["skipped_labels"]:
             msg += self.tr("  Unmapped labels skipped: %s") % ", ".join(sorted(res["skipped_labels"]))
+        if res["collisions"]:
+            msg += self.tr("  %d image(s) skipped: same file name already written to the flat output folder") % len(res["collisions"])
         return res, msg
 
     def generateMasksOp(self):
@@ -3717,6 +3810,7 @@ class MainWindow(QtWidgets.QMainWindow):
             res = self._runWithProgress(
                 self.tr("Generating overlays"), mask_tools.generate_overlays, images,
                 thickness=self.overlayThicknessSpin.value(),
+                out_root=self._mask_output_dir, base_dir=self.lastOpenDir,
             )
         except Exception as e:
             logger.exception("Generate overlay failed")
@@ -3726,6 +3820,8 @@ class MainWindow(QtWidgets.QMainWindow):
             res["written"], res["total"], res["missing_masks"], len(res["out_dirs"]))
         if res["failed"]:
             msg += self.tr("  %d unreadable") % res["failed"]
+        if res["collisions"]:
+            msg += self.tr("  %d skipped (duplicate file name)") % len(res["collisions"])
         if res["cancelled"]:
             msg = self.tr("Cancelled. ") + msg
         msg = maskMsg + "\n" + msg
