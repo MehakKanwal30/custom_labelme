@@ -1,0 +1,198 @@
+"""Mask generation and outline overlays for the folder open in labelme.
+
+Ported from Scipts/mask_gen.py and Scipts/outline_overlay.py. Both functions
+work on one flat folder (images + jsons side by side) and report progress via
+a callback so the GUI can drive a QProgressDialog.
+"""
+import json
+import os
+import os.path as osp
+
+import cv2
+import numpy as np
+
+from labelme.label_config import COLOR_MAP, resolve_label
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+MASKS_DIRNAME = "masks"
+OVERLAYS_DIRNAME = "overlays"
+
+LABEL_COLORS = {
+    255: (0, 0, 255),
+    80: (0, 255, 0),
+    180: (205, 0, 115),
+}
+
+
+def list_images(folder):
+    return sorted(
+        f for f in os.listdir(folder)
+        if osp.splitext(f)[1].lower() in IMAGE_EXTS
+        and osp.isfile(osp.join(folder, f))
+    )
+
+
+def _read_image(path):
+    # imdecode handles non-ASCII paths that cv2.imread can fail on
+    data = np.fromfile(path, dtype=np.uint8)
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _write_image(path, img):
+    ok, buf = cv2.imencode(osp.splitext(path)[1], img)
+    if ok:
+        buf.tofile(path)
+    return ok
+
+
+def collect_labels(image_paths, json_dir=None):
+    """Return {label: shape count} over the JSONs belonging to these images."""
+    counts = {}
+    for path in image_paths:
+        folder, fname = osp.split(path)
+        json_path = osp.join(json_dir or folder, osp.splitext(fname)[0] + ".json")
+        if not osp.exists(json_path):
+            continue
+        try:
+            with open(json_path, encoding="utf-8") as fh:
+                shapes = json.load(fh).get("shapes", [])
+        except (OSError, ValueError):
+            continue
+        for shape in shapes:
+            label = shape.get("label", "")
+            counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def default_label_values(labels):
+    """Default gray value per label from label_config, or None when unmapped."""
+    out = {}
+    for label in labels:
+        canonical = resolve_label(label)
+        out[label] = COLOR_MAP[canonical][0] if canonical is not None else None
+    return out
+
+
+def _multiclass_mask(shapes, w, h, label_values=None):
+    """Same logic as mask_gen.create_multiclass_mask. Returns (mask, skipped).
+
+    label_values ({label: gray}) overrides label_config when given."""
+    mask = np.zeros((h, w, 3), dtype=np.uint8)
+    skipped = set()
+
+    def area(s):
+        return cv2.contourArea(np.array(s["points"], dtype=np.float32))
+
+    for shape in sorted(shapes, key=area, reverse=True):
+        label = shape["label"]
+        if label_values is not None:
+            gray = label_values.get(label)
+            if not gray:
+                skipped.add(label)
+                continue
+            color = (int(gray),) * 3
+        else:
+            canonical = resolve_label(label)
+            if canonical is None:
+                skipped.add(label)
+                continue
+            color = COLOR_MAP[canonical]
+        points = np.array(shape["points"], dtype=np.int32)
+        cv2.fillPoly(mask, [points], color=color)
+        if cv2.contourArea(points.astype(np.float32)) < 1.0:
+            cx = max(0, min(int(round(np.mean(points[:, 0]))), w - 1))
+            cy = max(0, min(int(round(np.mean(points[:, 1]))), h - 1))
+            cv2.circle(mask, (cx, cy), 0, color, -1)
+    return mask, skipped
+
+
+def generate_masks(image_paths, json_dir=None, progress=None, label_values=None):
+    """Write <image dir>/masks/<stem>_mask.png for every image path given.
+
+    json_dir overrides where JSONs are read from (labelme output dir).
+    progress(i, total, name) -> False to cancel.
+    """
+    image_paths = list(image_paths)
+    result = dict(written=0, black=0, skipped_labels=set(), out_dirs=set(),
+                  cancelled=False, failed=0, total=len(image_paths))
+    for i, path in enumerate(image_paths):
+        if progress and progress(i, len(image_paths), osp.basename(path)) is False:
+            result["cancelled"] = True
+            break
+        folder, fname = osp.split(path)
+        stem = osp.splitext(fname)[0]
+        out_dir = osp.join(folder, MASKS_DIRNAME)
+        os.makedirs(out_dir, exist_ok=True)
+        img = _read_image(path)
+        if img is None:
+            result["failed"] += 1
+            continue
+        h, w = img.shape[:2]
+        json_path = osp.join(json_dir or folder, stem + ".json")
+        if osp.exists(json_path):
+            with open(json_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            mask, skipped = _multiclass_mask(data.get("shapes", []), w, h, label_values)
+            result["skipped_labels"] |= skipped
+        else:
+            mask = np.zeros((h, w, 3), dtype=np.uint8)
+            result["black"] += 1
+        _write_image(osp.join(out_dir, f"{stem}_mask.png"), cv2.cvtColor(mask, cv2.COLOR_RGB2BGR))
+        result["written"] += 1
+        result["out_dirs"].add(out_dir)
+    if progress and not result["cancelled"]:
+        progress(len(image_paths), len(image_paths), "")
+    return result
+
+
+def _color_for_label(lbl):
+    if lbl in LABEL_COLORS:
+        return LABEL_COLORS[lbl]
+    hsv = np.uint8([[[int((lbl * 35) % 180), 200, 255]]])
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
+    return (int(bgr[0]), int(bgr[1]), int(bgr[2]))
+
+
+def _draw_outlines(image, mask, thickness):
+    uniq = np.unique(mask)
+    for lbl in uniq[uniq != 0]:
+        lbl = int(lbl)
+        contours, _ = cv2.findContours(
+            (mask == lbl).astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if contours:
+            cv2.drawContours(image, contours, -1, _color_for_label(lbl),
+                             thickness=thickness, lineType=cv2.LINE_AA)
+    return image
+
+
+def generate_overlays(image_paths, thickness=1, progress=None):
+    """Draw outlines from <image dir>/masks onto each image -> <image dir>/overlays."""
+    image_paths = list(image_paths)
+    result = dict(written=0, missing_masks=0, failed=0, out_dirs=set(),
+                  cancelled=False, total=len(image_paths))
+    for i, path in enumerate(image_paths):
+        if progress and progress(i, len(image_paths), osp.basename(path)) is False:
+            result["cancelled"] = True
+            break
+        folder, fname = osp.split(path)
+        stem = osp.splitext(fname)[0]
+        mask_path = osp.join(folder, MASKS_DIRNAME, f"{stem}_mask.png")
+        if not osp.exists(mask_path):
+            result["missing_masks"] += 1
+            continue
+        image = _read_image(path)
+        mask = cv2.imdecode(np.fromfile(mask_path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        if image is None or mask is None:
+            result["failed"] += 1
+            continue
+        if mask.shape[:2] != image.shape[:2]:
+            mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+        out_dir = osp.join(folder, OVERLAYS_DIRNAME)
+        os.makedirs(out_dir, exist_ok=True)
+        _write_image(osp.join(out_dir, f"{stem}.png"), _draw_outlines(image, mask, thickness))
+        result["written"] += 1
+        result["out_dirs"].add(out_dir)
+    if progress and not result["cancelled"]:
+        progress(len(image_paths), len(image_paths), "")
+    return result

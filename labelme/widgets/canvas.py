@@ -515,6 +515,7 @@ class Canvas(QtWidgets.QWidget):
         shape.removePoint(index)
         shape.highlightClear()
         self.hShape = shape
+        self.hVertex = None
         self.prevhVertex = None
         self.movingShape = True  # Save changes
 
@@ -847,6 +848,11 @@ class Canvas(QtWidgets.QWidget):
 
     def boundedMoveVertex(self, pos):
         index, shape = self.hVertex, self.hShape
+        # The vertex index can go stale if the shape lost points (remove
+        # point, undo, etc.) while it was still highlighted.
+        if shape is None or index is None or not 0 <= index < len(shape):
+            self.hVertex = None
+            return
         point = shape[index]  # type: ignore[index]
         if self.outOfPixmap(pos):
             pos = self.intersectionPoint(point, pos)

@@ -35,6 +35,8 @@ from labelme.widgets import FileDialogPreview
 from labelme.widgets import LabelDialog
 from labelme.widgets import LabelListWidget
 from labelme.widgets import LabelListWidgetItem
+from labelme.widgets import MaskLabelDialog
+from labelme.widgets import ReferenceView
 from labelme.widgets import ToolBar
 from labelme.widgets import UniqueLabelQListWidget
 from labelme.widgets import ZoomWidget
@@ -182,6 +184,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hide_annotations = False
         #END
 
+        #EDITED KEEP HIDDEN LABELS
+        self._hidden_labels = set()
+        self._syncing_label_visibility = False
+        #END
+
         self._replace_polygon_template = None
 
         self.canvas = Canvas(
@@ -210,7 +217,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.selectionChanged.connect(self.shapeSelectionChanged)
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
 
-        self.setCentralWidget(scrollArea)
+        # Central splitter: main canvas + optional read-only Mask / Overlay panes
+        self.maskView = ReferenceView("Mask")
+        self.overlayView = ReferenceView("Overlay")
+        self.maskView.hide()
+        self.overlayView.hide()
+        self.viewSplitter = QtWidgets.QSplitter(Qt.Horizontal)  # type: ignore[attr-defined]
+        self.viewSplitter.setChildrenCollapsible(False)
+        self.viewSplitter.addWidget(scrollArea)
+        self.viewSplitter.addWidget(self.maskView)
+        self.viewSplitter.addWidget(self.overlayView)
+        self.setCentralWidget(self.viewSplitter)
+        for _bar in self.scrollBars.values():
+            _bar.valueChanged.connect(lambda *_: self._syncReferenceViews())
+            _bar.rangeChanged.connect(lambda *_: self._syncReferenceViews())
 
         features = QtWidgets.QDockWidget.DockWidgetFeatures()
         for dock in ["flag_dock", "label_dock", "shape_dock", "file_dock"]:
@@ -572,7 +592,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         hideAll = action(
             self.tr("&Hide\nPolygons"),
-            functools.partial(self.togglePolygons, False),
+            functools.partial(self._togglePolygonsFromUser, False),
             shortcuts["hide_all_polygons"],
             icon="eye",
             tip=self.tr("Hide all polygons"),
@@ -580,7 +600,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         showAll = action(
             self.tr("&Show\nPolygons"),
-            functools.partial(self.togglePolygons, True),
+            functools.partial(self._togglePolygonsFromUser, True),
             shortcuts["show_all_polygons"],
             icon="eye",
             tip=self.tr("Show all polygons"),
@@ -588,7 +608,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         toggleAll = action(
             self.tr("&Toggle\nPolygons"),
-            functools.partial(self.togglePolygons, None),
+            functools.partial(self._togglePolygonsFromUser, None),
             shortcuts["toggle_all_polygons"],
             icon="eye",
             tip=self.tr("Toggle all polygons"),
@@ -729,6 +749,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self.toggleHideAnnotations,
             "G",
             tip=self.tr("Persist annotation visibility across image changes"),
+            checkable=True,
+            checked=False,
+            enabled=True,
+        )
+        #END
+
+        #EDITED KEEP HIDDEN LABELS
+        keepHiddenLabels = action(
+            self.tr("Keep\nHidden"),
+            self.toggleKeepHiddenLabels,
+            "L",
+            tip=self.tr("Labels you uncheck stay hidden on every image until this is turned off"),
             checkable=True,
             checked=False,
             enabled=True,
@@ -917,6 +949,74 @@ class MainWindow(QtWidgets.QMainWindow):
         self._auto_advance_timer.timeout.connect(self.openNextImg)
         #END
 
+        # Generate Mask / Generate Overlay: one-shot folder buttons
+        def _makeOneShotWidget(text, tip, slot, withThickness=False):
+            widget = QtWidgets.QWidgetAction(self)
+            container = QtWidgets.QWidget()
+            container.setFixedWidth(_OP_BTN_W)
+            lay = QtWidgets.QVBoxLayout(container)
+            lay.setContentsMargins(2, 1, 2, 1)
+            lay.setSpacing(1)
+            btn = QtWidgets.QPushButton(text)
+            btn.setToolTip(tip)
+            btn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+            btn.clicked.connect(slot)
+            lay.addWidget(btn)
+            spin = None
+            if withThickness:
+                row = QtWidgets.QHBoxLayout()
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(2)
+                lbl = QtWidgets.QLabel(self.tr("thickness:"))
+                f = lbl.font()
+                f.setPointSize(_OP_SUB_PT)
+                lbl.setFont(f)
+                lbl.setFixedHeight(_OP_SUB_H)
+                spin = QtWidgets.QSpinBox()
+                spin.setFont(f)
+                spin.setFixedHeight(_OP_SUB_H)
+                spin.setRange(1, 10)
+                spin.setValue(1)
+                row.addWidget(lbl)
+                row.addWidget(spin)
+                lay.addLayout(row)
+            else:
+                lay.addSpacing(_OP_SUB_H)
+            widget.setDefaultWidget(container)
+            return widget, spin
+
+        generateMaskWidget, _ = _makeOneShotWidget(
+            self.tr("Generate Mask"),
+            self.tr("Create a masks/ folder in the opened folder with a mask for every image"),
+            self.generateMasksOp,
+        )
+        generateOverlayWidget, self.overlayThicknessSpin = _makeOneShotWidget(
+            self.tr("Generate Overlay"),
+            self.tr("Regenerate masks, then create an overlays/ folder with mask outlines drawn on every image"),
+            self.generateOverlayOp,
+            withThickness=True,
+        )
+
+        # Compare view toggles: Show Mask / Show Overlay beside the main image
+        showViewsWidget = QtWidgets.QWidgetAction(self)
+        _svContainer = QtWidgets.QWidget()
+        _svContainer.setFixedWidth(_OP_BTN_W)
+        _svLayout = QtWidgets.QVBoxLayout(_svContainer)
+        _svLayout.setContentsMargins(2, 1, 2, 1)
+        _svLayout.setSpacing(1)
+        self.showMaskBtn = QtWidgets.QPushButton(self.tr("Show Mask"))
+        self.showOverlayBtn = QtWidgets.QPushButton(self.tr("Show Overlay"))
+        for _b, _tip in (
+            (self.showMaskBtn, self.tr("Show masks/<image>_mask.png beside the image, synced")),
+            (self.showOverlayBtn, self.tr("Show overlays/<image>.png beside the image, synced")),
+        ):
+            _b.setCheckable(True)
+            _b.setToolTip(_tip)
+            _b.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+            _b.toggled.connect(self._updateReferenceViews)
+            _svLayout.addWidget(_b)
+        showViewsWidget.setDefaultWidget(_svContainer)
+
         # Group zoom controls into a list for easier toggling.
         zoomActions = (
             self.zoomWidget,
@@ -1023,6 +1123,7 @@ class MainWindow(QtWidgets.QMainWindow):
             keepPrevBrightness=keepPrevBrightness,
             pixelGrid=pixelGrid,
             hideAnnotations=hideAnnotations,
+            keepHiddenLabels=keepHiddenLabels,
             deletePolygon=deletePolygon,
             deletePolygonMulti=deletePolygonMulti,
             replaceLabel=replaceLabel,
@@ -1034,6 +1135,8 @@ class MainWindow(QtWidgets.QMainWindow):
             separateLR=separateLR,
             autoAdvance=autoAdvance,
             autoAdvanceWidget=autoAdvanceWidget,
+            generateMaskWidget=generateMaskWidget,
+            generateOverlayWidget=generateOverlayWidget,
             zoomActions=zoomActions,
             openNextImg=openNextImg,
             openPrevImg=openPrevImg,
@@ -1192,6 +1295,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 #EDITED HIDE ANNOTATIONS
                 hideAnnotations,
                 #END
+                #EDITED KEEP HIDDEN LABELS
+                keepHiddenLabels,
+                #END
                 #EDITED ANNOTATION OPS
                 None,
                 separateLR,
@@ -1309,6 +1415,20 @@ class MainWindow(QtWidgets.QMainWindow):
         followMouseWidget.setDefaultWidget(_fmContainer)
         #END
 
+        #EDITED KEEP HIDDEN LABELS
+        keepHiddenWidget = QtWidgets.QWidgetAction(self)
+        _khContainer = QtWidgets.QWidget()
+        _khContainer.setFixedWidth(_OP_BTN_W)
+        _khLayout = QtWidgets.QVBoxLayout(_khContainer)
+        _khLayout.setContentsMargins(2, 1, 2, 1)
+        _khBtn = QtWidgets.QToolButton()
+        _khBtn.setDefaultAction(keepHiddenLabels)
+        _khBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)  # type: ignore[attr-defined]
+        _khBtn.setFixedSize(_OP_BTN_W - 4, _keep_btn_h)
+        _khLayout.addWidget(_khBtn)
+        keepHiddenWidget.setDefaultWidget(_khContainer)
+        #END
+
         #EDITED SELECTED SHAPE PRIORITY
         selectedShapePriorityWidget = QtWidgets.QWidgetAction(self)
         _spContainer = QtWidgets.QWidget()
@@ -1324,6 +1444,18 @@ class MainWindow(QtWidgets.QMainWindow):
         #END
 
         self.tools = self.toolbar("Tools")
+        # Second toolbar row: annotation ops + Generate Mask / Generate Overlay (row 1 overflows)
+        self.maskTools = self.toolbar("Mask Tools", [
+            autoDeleteWidget,
+            replaceLabelWidget,
+            replacePolygonWidget,
+            separateLRWidget,
+            None,
+            generateMaskWidget,
+            generateOverlayWidget,
+            None,
+            showViewsWidget,
+        ])
         self.actions.tool = (  # type: ignore[attr-defined]
             open_,
             opendir,
@@ -1341,11 +1473,8 @@ class MainWindow(QtWidgets.QMainWindow):
             keepAnnotationWidget,
             keepBrightnessWidget,
             followMouseWidget,
+            keepHiddenWidget,
             None,
-            autoDeleteWidget,
-            replaceLabelWidget,
-            replacePolygonWidget,
-            separateLRWidget,
             autoAdvanceWidget,
             None,
             zoom,
@@ -1399,6 +1528,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # or simply:
         # self.restoreGeometry(settings['window/geometry']
         self.restoreState(state)
+        # saved window state predates the Mask Tools toolbar: force it onto its own row
+        self.addToolBar(Qt.TopToolBarArea, self.maskTools)  # type: ignore[attr-defined]
+        if not self.toolBarBreak(self.maskTools):
+            self.insertToolBarBreak(self.maskTools)
+        self.maskTools.show()
 
         # Populate the File menu dynamically.
         self.updateFileMenu()
@@ -1691,6 +1825,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if checked is None:
             checked = not getattr(self.canvas, "flip_horizontal", False)
         self.canvas.flip_horizontal = checked
+        self._syncReferenceViews()
         h_bar = self.scrollBars[Qt.Horizontal]  # type: ignore[attr-defined]
         self.setScroll(Qt.Horizontal, h_bar.maximum() - h_bar.value())  # type: ignore[attr-defined]
         self.canvas.update()
@@ -1699,6 +1834,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if checked is None:
             checked = not getattr(self.canvas, "flip_vertical", False)
         self.canvas.flip_vertical = checked
+        self._syncReferenceViews()
         v_bar = self.scrollBars[Qt.Vertical]  # type: ignore[attr-defined]
         self.setScroll(Qt.Vertical, v_bar.maximum() - v_bar.value())  # type: ignore[attr-defined]
         self.canvas.update()
@@ -1752,6 +1888,59 @@ class MainWindow(QtWidgets.QMainWindow):
     def toggleHideAnnotations(self, checked):
         self._hide_annotations = checked
         self.togglePolygons(not checked)
+        if not checked:
+            self._applyHiddenLabels()
+    #END
+
+    #EDITED KEEP HIDDEN LABELS
+    def _keepHiddenLabelsOn(self):
+        return self.actions.keepHiddenLabels.isChecked()  # type: ignore[attr-defined]
+
+    def _setLabelChecked(self, label, checked):
+        # Programmatic check-state change for every item with this label;
+        # the sync flag stops labelItemChanged from recording it.
+        state = Qt.Checked if checked else Qt.Unchecked  # type: ignore[attr-defined]
+        self._syncing_label_visibility = True
+        try:
+            for item in self.labelList:
+                if item.shape().label == label and item.checkState() != state:
+                    item.setCheckState(state)
+        finally:
+            self._syncing_label_visibility = False
+
+    def _applyHiddenLabels(self):
+        if not self._keepHiddenLabelsOn() or self._hide_annotations:
+            return
+        for label in self._hidden_labels:
+            self._setLabelChecked(label, False)
+
+    def _togglePolygonsFromUser(self, value):
+        # Hide/Show/Toggle Polygons actions: unlike G or image loads, these are
+        # the user choosing visibility, so Keep Hidden adopts the result.
+        self.togglePolygons(value)
+        if not self._keepHiddenLabelsOn() or self._hide_annotations:
+            return
+        self._hidden_labels = {
+            item.shape().label
+            for item in self.labelList
+            if item.checkState() == Qt.Unchecked  # type: ignore[attr-defined]
+        }
+        self._applyHiddenLabels()
+
+    def toggleKeepHiddenLabels(self, checked):
+        if checked:
+            # Seed from whatever is currently unchecked on this image.
+            self._hidden_labels = {
+                item.shape().label
+                for item in self.labelList
+                if item.checkState() == Qt.Unchecked  # type: ignore[attr-defined]
+            }
+            self._applyHiddenLabels()
+        else:
+            if not self._hide_annotations:
+                for label in self._hidden_labels:
+                    self._setLabelChecked(label, True)
+            self._hidden_labels = set()
     #END
 
     #EDITED DARK MODE
@@ -2031,7 +2220,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actions.copy.setEnabled(n_selected)  # type: ignore[attr-defined]
         self.actions.edit.setEnabled(n_selected)  # type: ignore[attr-defined]
 
-    def addLabel(self, shape):
+    def addLabel(self, shape, apply_hidden=True):
         if shape.group_id is None:
             text = shape.label
         else:
@@ -2053,6 +2242,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 html.escape(text), *shape.fill_color.getRgb()[:3]
             )
         )
+        #EDITED KEEP HIDDEN LABELS
+        if (
+            apply_hidden
+            and self._keepHiddenLabelsOn()
+            and not self._hide_annotations
+            and shape.label in self._hidden_labels
+        ):
+            self._syncing_label_visibility = True
+            try:
+                label_list_item.setCheckState(Qt.Unchecked)  # type: ignore[attr-defined]
+            finally:
+                self._syncing_label_visibility = False
+        #END
 
     def _update_shape_color(self, shape):
         r, g, b = self._get_rgb_by_label(shape.label)
@@ -2227,7 +2429,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def labelItemChanged(self, item):
         shape = item.shape()
-        self.canvas.setShapeVisible(shape, item.checkState() == Qt.Checked)  # type: ignore[attr-defined]
+        visible = item.checkState() == Qt.Checked  # type: ignore[attr-defined]
+        #EDITED KEEP HIDDEN LABELS
+        # itemChanged also fires on addItem/setText; only a real check-state
+        # flip counts as the user hiding/showing a label.
+        changed = self.canvas.isVisible(shape) != visible
+        self.canvas.setShapeVisible(shape, visible)
+        # Hide/show one shape -> hide/show every shape with that label, and
+        # remember it so the next image loads with the same labels hidden.
+        if not changed or self._syncing_label_visibility or not self._keepHiddenLabelsOn():
+            return
+        if not visible and shape.label not in self._hidden_labels:
+            self._hidden_labels.add(shape.label)
+            self._setLabelChecked(shape.label, False)
+        elif visible and shape.label in self._hidden_labels:
+            self._hidden_labels.discard(shape.label)
+            self._setLabelChecked(shape.label, True)
+        #END
 
     def labelOrderChanged(self):
         self.setDirty()
@@ -2266,7 +2484,7 @@ class MainWindow(QtWidgets.QMainWindow):
             shape = self.canvas.setLastLabel(text, flags)
             shape.group_id = group_id
             shape.description = description
-            self.addLabel(shape)
+            self.addLabel(shape, apply_hidden=False)
             self.actions.editMode.setEnabled(True)  # type: ignore[attr-defined]
             self.actions.undoLastPoint.setEnabled(False)  # type: ignore[attr-defined]
             self.actions.redoLastPoint.setEnabled(False)  # type: ignore[attr-defined]
@@ -2432,10 +2650,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def togglePolygons(self, value):
         flag = value
-        for item in self.labelList:
-            if value is None:
-                flag = item.checkState() == Qt.Unchecked  # type: ignore[attr-defined]
-            item.setCheckState(Qt.Checked if flag else Qt.Unchecked)  # type: ignore[attr-defined]
+        #EDITED KEEP HIDDEN LABELS
+        # Programmatic bulk show/hide (G, image load) must not be recorded;
+        # user-triggered calls go through _togglePolygonsFromUser.
+        self._syncing_label_visibility = True
+        try:
+            for item in self.labelList:
+                if value is None:
+                    flag = item.checkState() == Qt.Unchecked  # type: ignore[attr-defined]
+                item.setCheckState(Qt.Checked if flag else Qt.Unchecked)  # type: ignore[attr-defined]
+        finally:
+            self._syncing_label_visibility = False
+        #END
 
     def loadFile(self, filename=None):
         """Load the specified file, or the last opened file if None."""
@@ -2622,6 +2848,7 @@ class MainWindow(QtWidgets.QMainWindow):
         #END
 
         self.paintCanvas()
+        self._updateReferenceViews()
         self.addRecentFile(self.filename)
         self.toggleActions(True)
         self.canvas.setFocus()
@@ -2652,6 +2879,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.scale = 0.01 * self.zoomWidget.value()
         self.canvas.adjustSize()
         self.canvas.update()
+        self._syncReferenceViews()
 
     def adjustScale(self, initial=False):
         value = self.scalers[self.FIT_WINDOW if initial else self.zoomMode]()
@@ -2662,8 +2890,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def scaleFitWindow(self):
         """Figure out the size of the pixmap to fit the main widget."""
         e = 2.0  # So that no scrollbars are generated.
-        w1 = self.centralWidget().width() - e  # type: ignore[union-attr]
-        h1 = self.centralWidget().height() - e  # type: ignore[union-attr]
+        w1 = self.scrollArea.width() - e  # type: ignore[union-attr]
+        h1 = self.scrollArea.height() - e  # type: ignore[union-attr]
         a1 = w1 / h1
         # Calculate a new scale value based on the pixmap's aspect ratio.
         w2 = self.canvas.pixmap.width() - 0.0
@@ -2673,7 +2901,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def scaleFitWidth(self):
         # The epsilon does not seem to work too well here.
-        w = self.centralWidget().width() - 2.0  # type: ignore[union-attr]
+        w = self.scrollArea.width() - 2.0  # type: ignore[union-attr]
         return w / self.canvas.pixmap.width()
 
     def enableSaveImageWithData(self, enabled):
@@ -3118,6 +3346,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         images = []
         for root, dirs, files in os.walk(folderPath):
+            # generated outputs must not show up in the file list
+            dirs[:] = [d for d in dirs if d not in ("masks", "overlays")]
             for file in files:
                 if file.lower().endswith(tuple(extensions)):
                     relativePath = os.path.normpath(osp.join(root, file))
@@ -3332,6 +3562,176 @@ class MainWindow(QtWidgets.QMainWindow):
             self.canvas.update()
             self.setDirty()
         self.status(self.tr("Separate L/R: %d shape(s) renamed") % changed)
+
+    # ── Compare view (mask / overlay panes) ───────────────────────────────────
+
+    def _updateReferenceViews(self, *_):
+        """Show/hide panes, load their images for the current file, equalise widths."""
+        showMask = self.showMaskBtn.isChecked()
+        showOverlay = self.showOverlayBtn.isChecked()
+        self.maskView.setVisible(showMask)
+        self.overlayView.setVisible(showOverlay)
+        if self.filename:
+            folder = osp.dirname(self.filename)
+            stem = osp.splitext(osp.basename(self.filename))[0]
+            self.maskView.setImagePath(osp.join(folder, "masks", stem + "_mask.png"))
+            self.overlayView.setImagePath(osp.join(folder, "overlays", stem + ".png"))
+        if showMask or showOverlay:
+            n = 1 + int(showMask) + int(showOverlay)
+            total = max(self.viewSplitter.width(), n)
+            self.viewSplitter.setSizes(
+                [total // n,
+                 total // n if showMask else 0,
+                 total // n if showOverlay else 0]
+            )
+        if not self.image.isNull() and self.zoomMode != self.MANUAL_ZOOM:
+            QTimer.singleShot(0, self.adjustScale)
+        QTimer.singleShot(0, self._syncReferenceViews)
+
+    def _syncReferenceViews(self):
+        if self.maskView.isHidden() and self.overlayView.isHidden():
+            return
+        args = (
+            self.canvas.scale,
+            getattr(self.canvas, "flip_horizontal", False),
+            getattr(self.canvas, "flip_vertical", False),
+            self.scrollBars[Qt.Horizontal].value(),  # type: ignore[attr-defined]
+            self.scrollBars[Qt.Vertical].value(),  # type: ignore[attr-defined]
+        )
+        for view in (self.maskView, self.overlayView):
+            if not view.isHidden():
+                view.syncView(*args)
+
+    def _maskToolImages(self):
+        """Images the app has loaded (recursive folder scan), or the single open file."""
+        if self.dirty:
+            self.saveFile()
+        images = list(self.imageList)
+        if not images and self.filename:
+            images = [self.filename]
+        images = [p for p in images if osp.isfile(p)]
+        if not images:
+            QtWidgets.QMessageBox.information(
+                self, self.tr("No images"), self.tr("Open a folder of images first."))
+        return images
+
+    def _runWithProgress(self, title, func, *args, **kwargs):
+        dlg = QtWidgets.QProgressDialog(title, self.tr("Cancel"), 0, 100, self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+
+        def progress(i, total, name):
+            dlg.setMaximum(max(total, 1))
+            dlg.setValue(i)
+            dlg.setLabelText("%s\n%d / %d  %s" % (title, i, total, name))
+            QtWidgets.QApplication.processEvents()
+            return not dlg.wasCanceled()
+
+        try:
+            return func(*args, progress=progress, **kwargs)
+        finally:
+            dlg.close()
+
+    def _askMaskLabelValues(self, images, json_dir):
+        """Show the label -> mask value dialog. Returns {label: value} or None if cancelled."""
+        from labelme import mask_tools
+        QtWidgets.QApplication.setOverrideCursor(Qt.WaitCursor)  # type: ignore[attr-defined]
+        try:
+            labels = mask_tools.collect_labels(images, json_dir)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        if not labels:
+            return {}  # nothing annotated: masks will be black
+        defaults = mask_tools.default_label_values(labels)
+        try:
+            saved = json.loads(self.settings.value("mask/label_values", "{}") or "{}")
+        except (ValueError, TypeError):
+            saved = {}
+        for label in labels:
+            if defaults[label] is None and saved.get(label):
+                defaults[label] = int(saved[label])
+        dlg = MaskLabelDialog(labels, defaults, self)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return None
+        values = dlg.values()
+        # remember values the user had to supply so reruns stay consistent
+        saved.update({l: v for l, v in values.items() if mask_tools.default_label_values([l])[l] is None})
+        self.settings.setValue("mask/label_values", json.dumps(saved))
+        return values
+
+    def _runMaskGeneration(self, images, title):
+        """Run mask generation with progress. Returns (result, summary) or (None, None) on error."""
+        from labelme import mask_tools
+        json_dir = self.output_dir if self.output_dir else None
+        label_values = self._askMaskLabelValues(images, json_dir)
+        if label_values is None:
+            return None, None
+        try:
+            res = self._runWithProgress(
+                self.tr("Generating masks"), mask_tools.generate_masks, images,
+                json_dir=json_dir, label_values=label_values,
+            )
+        except Exception as e:
+            logger.exception("Generate mask failed")
+            QtWidgets.QMessageBox.critical(self, title, str(e))
+            return None, None
+        msg = self.tr("Masks: %d of %d written (%d black, no JSON) in %d masks/ folder(s)") % (
+            res["written"], res["total"], res["black"], len(res["out_dirs"]))
+        if res["failed"]:
+            msg += self.tr("  %d image(s) unreadable") % res["failed"]
+        if res["skipped_labels"]:
+            msg += self.tr("  Unmapped labels skipped: %s") % ", ".join(sorted(res["skipped_labels"]))
+        return res, msg
+
+    def generateMasksOp(self):
+        images = self._maskToolImages()
+        if not images:
+            return
+        title = self.tr("Generate Mask")
+        res, msg = self._runMaskGeneration(images, title)
+        if res is None:
+            return
+        if res["cancelled"]:
+            msg = self.tr("Cancelled. ") + msg
+        self._updateReferenceViews()
+        self.status(msg, 15000)
+        QtWidgets.QMessageBox.information(self, title, msg)
+
+    def generateOverlayOp(self):
+        """Always regenerate masks first, then draw overlays from those fresh masks."""
+        from labelme import mask_tools
+        images = self._maskToolImages()
+        if not images:
+            return
+        title = self.tr("Generate Overlay")
+        maskRes, maskMsg = self._runMaskGeneration(images, title)
+        if maskRes is None:
+            return
+        if maskRes["cancelled"]:
+            self._updateReferenceViews()
+            QtWidgets.QMessageBox.information(self, title, self.tr("Cancelled during mask generation. ") + maskMsg)
+            return
+        try:
+            res = self._runWithProgress(
+                self.tr("Generating overlays"), mask_tools.generate_overlays, images,
+                thickness=self.overlayThicknessSpin.value(),
+            )
+        except Exception as e:
+            logger.exception("Generate overlay failed")
+            QtWidgets.QMessageBox.critical(self, title, str(e))
+            return
+        msg = self.tr("Overlays: %d of %d written, %d without a mask in %d overlays/ folder(s)") % (
+            res["written"], res["total"], res["missing_masks"], len(res["out_dirs"]))
+        if res["failed"]:
+            msg += self.tr("  %d unreadable") % res["failed"]
+        if res["cancelled"]:
+            msg = self.tr("Cancelled. ") + msg
+        msg = maskMsg + "\n" + msg
+        self._updateReferenceViews()
+        self.status(msg.replace("\n", "  |  "), 15000)
+        QtWidgets.QMessageBox.information(self, title, msg)
 
     def separateLRFolderOp(self):
         if self.dirty:
