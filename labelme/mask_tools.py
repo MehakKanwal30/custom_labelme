@@ -171,16 +171,44 @@ def _color_for_label(lbl):
 
 
 def _draw_outlines(image, mask, thickness):
-    uniq = np.unique(mask)
-    for lbl in uniq[uniq != 0]:
+    """Draw per-label outlines. thickness may be fractional (0.5, 1.5, ...).
+
+    Whole-number thickness draws directly. Fractional thickness draws the lines on a
+    supersampled layer (k x resolution) and averages them back down, so the image
+    itself is untouched except under the lines."""
+    thickness = max(float(thickness), 0.25)
+    whole = abs(thickness - round(thickness)) < 1e-6
+    h, w = mask.shape[:2]
+    if whole:
+        k = 1
+    else:
+        px = h * w
+        k = 4 if px <= 1_000_000 else 2 if px <= 4_000_000 else 1
+    t = max(1, int(round(thickness if whole else thickness * k)))
+
+    layer = np.zeros((h * k, w * k, 3), np.uint8) if k > 1 else image
+    alpha = np.zeros((h * k, w * k), np.uint8) if k > 1 else None
+    for lbl in np.unique(mask)[1:] if mask.min() == 0 else np.unique(mask):
         lbl = int(lbl)
+        if lbl == 0:
+            continue
         contours, _ = cv2.findContours(
             (mask == lbl).astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
-        if contours:
-            cv2.drawContours(image, contours, -1, _color_for_label(lbl),
-                             thickness=thickness, lineType=cv2.LINE_AA)
-    return image
+        if not contours:
+            continue
+        color = _color_for_label(lbl)
+        if k > 1:
+            contours = [c.astype(np.int32) * k + (k - 1) // 2 for c in contours]
+            cv2.drawContours(alpha, contours, -1, 255, thickness=t, lineType=cv2.LINE_AA)
+        cv2.drawContours(layer, contours, -1, color, thickness=t, lineType=cv2.LINE_AA)
+    if k == 1:
+        return image
+    layer_d = cv2.resize(layer, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)
+    a = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)[..., None] / 255.0
+    # layer_d is already weighted by coverage (black elsewhere), so it is premultiplied
+    out = image.astype(np.float32) * (1.0 - a) + layer_d
+    return np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
 
 def generate_overlays(image_paths, thickness=1, progress=None, out_root=None, base_dir=None):
