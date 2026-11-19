@@ -22,3 +22,5 @@ from .zoom_widget import ZoomWidget
 
 from .reference_view import ReferenceView
 from .mask_label_dialog import MaskLabelDialog
+from .mirror_snap_dialog import MirrorSnapDialog
+from .shrink_polygons_dialog import ShrinkPolygonsDialog

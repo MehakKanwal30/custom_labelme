@@ -7,6 +7,7 @@ import os
 import os.path as osp
 import json
 import re
+import shutil
 import webbrowser
 
 import imgviz
@@ -24,6 +25,7 @@ from PyQt5.QtWidgets import QDoubleSpinBox, QLabel
 
 from labelme import __appname__
 from labelme._automation import bbox_from_text
+from labelme import label_colors
 from labelme.config import get_config
 from labelme.label_file import LabelFile
 from labelme.label_file import LabelFileError
@@ -36,6 +38,8 @@ from labelme.widgets import LabelDialog
 from labelme.widgets import LabelListWidget
 from labelme.widgets import LabelListWidgetItem
 from labelme.widgets import MaskLabelDialog
+from labelme.widgets import MirrorSnapDialog
+from labelme.widgets import ShrinkPolygonsDialog
 from labelme.widgets import ReferenceView
 from labelme.widgets import ToolBar
 from labelme.widgets import UniqueLabelQListWidget
@@ -198,6 +202,8 @@ class MainWindow(QtWidgets.QMainWindow):
             crosshair=self._config["canvas"]["crosshair"],
         )
         self.canvas.zoomRequest.connect(self.zoomRequest)
+        self.canvas.splitRequested.connect(self.splitPolygon)
+        self.canvas.splitMessage.connect(lambda m: self.status(m, 8000))
         self.canvas.mouseMoved.connect(
             lambda pos: self.status(f"Mouse is at: x={pos.x()}, y={pos.y()}")
         )
@@ -220,13 +226,16 @@ class MainWindow(QtWidgets.QMainWindow):
         # Central splitter: main canvas + optional read-only Mask / Overlay panes
         self.maskView = ReferenceView("Mask")
         self.overlayView = ReferenceView("Overlay")
+        self.fixedView = ReferenceView("Fixed JSON")
         self.maskView.hide()
         self.overlayView.hide()
+        self.fixedView.hide()
         self.viewSplitter = QtWidgets.QSplitter(Qt.Horizontal)  # type: ignore[attr-defined]
         self.viewSplitter.setChildrenCollapsible(False)
         self.viewSplitter.addWidget(scrollArea)
         self.viewSplitter.addWidget(self.maskView)
         self.viewSplitter.addWidget(self.overlayView)
+        self.viewSplitter.addWidget(self.fixedView)
         self.setCentralWidget(self.viewSplitter)
         for _bar in self.scrollBars.values():
             _bar.valueChanged.connect(lambda *_: self._syncReferenceViews())
@@ -1041,6 +1050,60 @@ class MainWindow(QtWidgets.QMainWindow):
             _svLayout.addWidget(_b)
         showViewsWidget.setDefaultWidget(_svContainer)
 
+        # Mirror Snap: run button + small/big label boxes, then Confirm / Reject / Show Fixed
+        mirrorSnapWidget = QtWidgets.QWidgetAction(self)
+        _msContainer = QtWidgets.QWidget()
+        _msContainer.setFixedWidth(_OP_BTN_W)
+        _msLayout = QtWidgets.QVBoxLayout(_msContainer)
+        _msLayout.setContentsMargins(2, 1, 2, 1)
+        _msLayout.setSpacing(1)
+        _msBtn = QtWidgets.QPushButton(self.tr("Mirror Snap"))
+        _msBtn.setToolTip(self.tr(
+            "Opens a window to pick the smaller / bigger label and tolerance.\n"
+            "Changed JSONs go to a fixed/ folder for review (Confirm / Reject)."))
+        _msBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        _msBtn.clicked.connect(self.mirrorSnapOp)
+        _msLayout.addWidget(_msBtn)
+        _shBtn = QtWidgets.QPushButton(self.tr("Shrink Polygons"))
+        _shBtn.setToolTip(self.tr(
+            "Opens a window to set distance, labels and overlap options.\n"
+            "Runs on the open files; changed JSONs go to fixed/ for review (Confirm / Reject)."))
+        _shBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        _shBtn.clicked.connect(self.shrinkPolygonsOp)
+        _msLayout.addWidget(_shBtn)
+        mirrorSnapWidget.setDefaultWidget(_msContainer)
+
+        mirrorReviewWidget = QtWidgets.QWidgetAction(self)
+        _mrContainer = QtWidgets.QWidget()
+        _mrContainer.setFixedWidth(_OP_BTN_W)
+        _mrLayout = QtWidgets.QVBoxLayout(_mrContainer)
+        _mrLayout.setContentsMargins(2, 1, 2, 1)
+        _mrLayout.setSpacing(1)
+        _mrRow = QtWidgets.QHBoxLayout()
+        _mrRow.setContentsMargins(0, 0, 0, 0)
+        _mrRow.setSpacing(2)
+        self.mirrorConfirmBtn = QtWidgets.QPushButton(self.tr("Confirm"))
+        self.mirrorConfirmBtn.setToolTip(self.tr("Replace the original JSONs with the fixed ones and delete fixed/"))
+        self.mirrorRejectBtn = QtWidgets.QPushButton(self.tr("Reject"))
+        self.mirrorRejectBtn.setToolTip(self.tr("Delete the fixed/ folder and keep the original JSONs"))
+        for _b in (self.mirrorConfirmBtn, self.mirrorRejectBtn):
+            _b.setFixedHeight(_OP_BTN_H)
+            _b.setEnabled(False)
+            _mrRow.addWidget(_b)
+        self.mirrorConfirmBtn.clicked.connect(self.mirrorConfirmOp)
+        self.mirrorRejectBtn.clicked.connect(self.mirrorRejectOp)
+        self.showFixedBtn = QtWidgets.QPushButton(self.tr("Show Fixed"))
+        self.showFixedBtn.setCheckable(True)
+        self.showFixedBtn.setToolTip(self.tr("Show the fixed JSON polygons beside the image, synced"))
+        self.showFixedBtn.setFixedHeight(_OP_BTN_H)
+        self.showFixedBtn.setEnabled(False)
+        self.showFixedBtn.toggled.connect(self._updateReferenceViews)
+        _mrLayout.addLayout(_mrRow)
+        _mrLayout.addWidget(self.showFixedBtn)
+        mirrorReviewWidget.setDefaultWidget(_mrContainer)
+        self._mirror_pending = {}
+        self._mirror_fixed_dirs = set()
+
         # Group zoom controls into a list for easier toggling.
         zoomActions = (
             self.zoomWidget,
@@ -1480,6 +1543,9 @@ class MainWindow(QtWidgets.QMainWindow):
             outputPathWidget,
             None,
             showViewsWidget,
+            None,
+            mirrorSnapWidget,
+            mirrorReviewWidget,
         ])
         self.actions.tool = (  # type: ignore[attr-defined]
             open_,
@@ -3599,8 +3665,10 @@ class MainWindow(QtWidgets.QMainWindow):
         """Show/hide panes, load their images for the current file, equalise widths."""
         showMask = self.showMaskBtn.isChecked()
         showOverlay = self.showOverlayBtn.isChecked()
+        showFixed = self.showFixedBtn.isChecked() and bool(self._mirror_pending)
         self.maskView.setVisible(showMask)
         self.overlayView.setVisible(showOverlay)
+        self.fixedView.setVisible(showFixed)
         if self.filename:
             from labelme import mask_tools
             stem = osp.splitext(osp.basename(self.filename))[0]
@@ -3609,31 +3677,346 @@ class MainWindow(QtWidgets.QMainWindow):
                 mask_tools.output_dir_for(self.filename, "masks", root, base), stem + "_mask.png"))
             self.overlayView.setImagePath(osp.join(
                 mask_tools.output_dir_for(self.filename, "overlays", root, base), stem + ".png"))
-        if showMask or showOverlay:
-            n = 1 + int(showMask) + int(showOverlay)
+            if showFixed:
+                self._updateFixedView()
+        state = (showMask, showOverlay, showFixed)
+        changed = state != getattr(self, "_refPaneState", (False, False, False))
+        self._refPaneState = state
+        # only equalise when panes are toggled; keep user-dragged widths on image changes
+        if any(state) and changed:
+            n = 1 + sum(state)
             total = max(self.viewSplitter.width(), n)
-            self.viewSplitter.setSizes(
-                [total // n,
-                 total // n if showMask else 0,
-                 total // n if showOverlay else 0]
-            )
+            self.viewSplitter.setSizes([total // n] + [total // n if on else 0 for on in state])
         if not self.image.isNull() and self.zoomMode != self.MANUAL_ZOOM:
             QTimer.singleShot(0, self.adjustScale)
         QTimer.singleShot(0, self._syncReferenceViews)
 
     def _syncReferenceViews(self):
-        if self.maskView.isHidden() and self.overlayView.isHidden():
+        views = (self.maskView, self.overlayView, self.fixedView)
+        if all(v.isHidden() for v in views):
             return
+        # image-space point at the middle of the main viewport; panes keep it centred
+        center_x = center_y = 0.0
+        if self.canvas.pixmap is not None:
+            sc = self.canvas.scale
+            off = self.canvas.offsetToCenter()
+            vp = self.scrollArea.viewport()
+            center_x = (self.scrollBars[Qt.Horizontal].value() + vp.width() / 2) / sc - off.x()  # type: ignore[attr-defined]
+            center_y = (self.scrollBars[Qt.Vertical].value() + vp.height() / 2) / sc - off.y()  # type: ignore[attr-defined]
         args = (
             self.canvas.scale,
             getattr(self.canvas, "flip_horizontal", False),
             getattr(self.canvas, "flip_vertical", False),
-            self.scrollBars[Qt.Horizontal].value(),  # type: ignore[attr-defined]
-            self.scrollBars[Qt.Vertical].value(),  # type: ignore[attr-defined]
+            center_x,
+            center_y,
         )
-        for view in (self.maskView, self.overlayView):
+        for view in views:
             if not view.isHidden():
                 view.syncView(*args)
+
+    # ── Mirror Snap (fixed JSON review) ───────────────────────────────────────
+
+    def _renderFixedPixmap(self):
+        """Current image with the polygons of its fixed JSON (or original if unchanged)."""
+        from labelme import mirror_snap
+        pm = QtGui.QPixmap(self.filename)
+        if pm.isNull():
+            return None, self.tr("Cannot read image")
+        orig = mirror_snap.json_path_for(self.filename, self.output_dir or None)
+        fixed = self._mirror_pending.get(orig)
+        src = fixed or orig
+        shapes = []
+        if osp.exists(src):
+            try:
+                with open(src, encoding="utf-8") as fh:
+                    shapes = json.load(fh).get("shapes", [])
+            except (OSError, ValueError):
+                shapes = []
+        painter = QtGui.QPainter(pm)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        colors = getattr(self, "_review_colors", None) or {}
+        only = getattr(self, "_review_filter", None)
+        top = getattr(self, "_review_top", None)
+        if only is not None:
+            shapes = [sh for sh in shapes if sh.get("label") in only]
+        if top is not None:  # draw this label last so it sits on top
+            shapes.sort(key=lambda sh: sh.get("label") == top)
+        for shape in shapes:
+            pts = [QtCore.QPointF(x, y) for x, y in shape.get("points", [])]
+            if not pts:
+                continue
+            label = shape.get("label", "")
+            color = colors.get(label)
+            if color is None:
+                color = QtGui.QColor(*label_colors.label_rgb(label))
+            painter.setPen(QtGui.QPen(color, 1.0))
+            kind = shape.get("shape_type", "polygon")
+            if kind == "rectangle" and len(pts) == 2:
+                painter.drawRect(QtCore.QRectF(pts[0], pts[1]).normalized())
+            elif kind == "polygon" and len(pts) >= 3:
+                painter.drawPolygon(QtGui.QPolygonF(pts))
+            else:
+                painter.drawPolyline(QtGui.QPolygonF(pts))
+            painter.setBrush(color)
+            for pt in pts:
+                painter.drawEllipse(pt, 0.7, 0.7)
+            painter.setBrush(QtCore.Qt.NoBrush)
+        if not fixed:
+            painter.setPen(QtGui.QColor(255, 255, 255))
+            painter.drawText(6, 16, str(self.tr("unchanged (no fix needed)")))
+        painter.end()
+        return pm, ""
+
+    def _updateFixedView(self):
+        if not self.filename:
+            return
+        pm, msg = self._renderFixedPixmap()
+        self.fixedView.setPixmap(pm, msg)
+
+    def _setMirrorPending(self, pending, fixed_dirs):
+        self._mirror_pending = dict(pending)
+        self._mirror_fixed_dirs = set(fixed_dirs)
+        has = bool(self._mirror_pending)
+        self.mirrorConfirmBtn.setEnabled(has)
+        self.mirrorRejectBtn.setEnabled(has)
+        self.showFixedBtn.setEnabled(has)
+        self.showFixedBtn.blockSignals(True)
+        self.showFixedBtn.setChecked(has)
+        self.showFixedBtn.blockSignals(False)
+        self._updateReferenceViews()
+
+    def _clearStaleFixed(self, images, json_dir, title):
+        """Delete leftover fixed/ folders (after asking). Returns False if the user declines."""
+        from labelme import mirror_snap
+        candidates = {
+            osp.join(osp.dirname(mirror_snap.json_path_for(p, json_dir)), mirror_snap.FIXED_DIRNAME)
+            for p in images
+        }
+        stale = sorted(d for d in candidates if osp.isdir(d))
+        if stale:
+            ans = QtWidgets.QMessageBox.question(
+                self, title,
+                self.tr("%d existing fixed/ folder(s) will be deleted and regenerated. Continue?") % len(stale))
+            if ans != QtWidgets.QMessageBox.Yes:
+                return False
+            for d in stale:
+                shutil.rmtree(d, ignore_errors=True)
+        return True
+
+    def _reviewPendingBlocked(self, title):
+        if self._mirror_pending:
+            QtWidgets.QMessageBox.information(
+                self, title,
+                self.tr("A fixed/ folder (%s) is waiting for review. Confirm or Reject it first.")
+                % getattr(self, "_review_title", ""))
+            return True
+        return False
+
+    def mirrorSnapOp(self):
+        from labelme import mirror_snap
+        if self._reviewPendingBlocked(self.tr("Mirror Snap")):
+            return
+        images = self._maskToolImages()
+        if not images:
+            return
+        json_dir = self.output_dir or None
+        from labelme import mask_tools
+        QtWidgets.QApplication.setOverrideCursor(Qt.WaitCursor)  # type: ignore[attr-defined]
+        try:
+            labels = mask_tools.collect_labels(images, json_dir)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        last_small, last_big, last_tol = getattr(self, "_mirror_last", ("", "", 2.5))
+        dlg = MirrorSnapDialog(list(labels), last_small, last_big, last_tol, self)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        small, big, tol = dlg.smallLabel(), dlg.bigLabel(), dlg.tolerance()
+        self._mirror_last = (small, big, tol)
+        if not self._clearStaleFixed(images, json_dir, self.tr("Mirror Snap")):
+            return
+        try:
+            res = self._runWithProgress(
+                self.tr("Mirror Snap"), mirror_snap.make_fixed_folder, images, big, small, json_dir=json_dir,
+                tol=tol,
+            )
+        except Exception as e:
+            logger.exception("Mirror snap failed")
+            QtWidgets.QMessageBox.critical(self, self.tr("Mirror Snap"), str(e))
+            return
+        if res["cancelled"]:
+            mirror_snap.reject_fixed(res["fixed_dirs"])
+            self.status(self.tr("Mirror Snap cancelled, fixed/ removed"), 8000)
+            return
+        msg = self.tr("Mirror Snap: %d of %d JSON(s) changed (%d run(s) moved); %d without JSON") % (
+            len(res["pending"]), res["scanned"], res["runs"], res["no_json"])
+        if res["failed"]:
+            msg += self.tr("; %d failed: %s") % (res["failed"], "; ".join(res["errors"][:3]))
+        if not res["pending"]:
+            msg += self.tr("  Nothing to fix.")
+        self._review_title = "Mirror Snap"
+        self._review_colors = None  # shared label colours (label_colors.py)
+        self._review_filter = {big, small}
+        self._review_top = big
+        self._setMirrorPending(res["pending"], res["fixed_dirs"])
+        self.status(msg, 15000)
+        QtWidgets.QMessageBox.information(self, self.tr("Mirror Snap"), msg)
+
+    def splitPolygon(self, shape, i, j):
+        """Cut one polygon into two along the line between its vertices i and j."""
+        if shape not in self.canvas.shapes or shape.shape_type != "polygon":
+            return
+        a, b = sorted((i, j))
+        n = len(shape.points)
+        if a == b or b - a < 2 or n - (b - a) < 2:
+            self.status(self.tr("Split: those points are next to each other, pick two that are further apart"), 8000)
+            return
+        idx_a = list(range(a, b + 1))                      # a .. b
+        idx_b = list(range(b, n)) + list(range(0, a + 1))  # b .. end, start .. a
+        self.canvas._backupShapes(self.canvas.shapesBackups)
+        self.canvas.shapeRedoStack.clear()
+        parts = []
+        for idxs in (idx_a, idx_b):
+            part = shape.copy()
+            part.points = [QtCore.QPointF(shape.points[k]) for k in idxs]
+            if len(shape.point_labels) == n:
+                part.point_labels = [shape.point_labels[k] for k in idxs]
+            else:
+                part.point_labels = [1] * len(idxs)
+            part.selected = False
+            part.highlightClear()
+            parts.append(part)
+        pos = self.canvas.shapes.index(shape)
+        self.canvas.shapes.remove(shape)
+        self.remLabels([shape])
+        if shape in self.canvas.selectedShapes:
+            self.canvas.selectedShapes.remove(shape)
+        for k, part in enumerate(parts):
+            self.canvas.shapes.insert(pos + k, part)
+            self.addLabel(part)
+        self.canvas.hShape = self.canvas.hVertex = self.canvas.hEdge = None
+        self.canvas.update()
+        self.setDirty()
+        self.status(self.tr("Split '%s' into two polygons (%d and %d points)") % (
+            shape.label, len(parts[0].points), len(parts[1].points)), 8000)
+
+    def _shrinkSelectedShapes(self, dlg):
+        """Shrink only the selected polygon(s) of the current image, live, with undo."""
+        from labelme import shrink_polygons
+        selected = [sh for sh in self.canvas.selectedShapes if sh.shape_type == "polygon" and len(sh.points) >= 3]
+        if not selected:
+            self.status(self.tr("Shrink Polygons: no polygon selected"), 8000)
+            return
+        shapes = self.canvas.shapes
+        # same overlap rule as the script, judged against every shape in this image
+        as_dicts = [
+            {"shape_type": sh.shape_type, "label": sh.label,
+             "points": [[p.x(), p.y()] for p in sh.points]}
+            for sh in shapes
+        ]
+        protected = (
+            shrink_polygons.find_overlapping_points(as_dicts, dlg.ignoreLabels())
+            if dlg.overlap() else {}
+        )
+        self.canvas._backupShapes(self.canvas.shapesBackups)
+        self.canvas.shapeRedoStack.clear()
+        moved = exempted = 0
+        for sh in selected:
+            idx = next(i for i, other in enumerate(shapes) if other is sh)
+            skip = protected.get(idx, set())
+            pts = shrink_polygons.shrink_points(as_dicts[idx]["points"], dlg.pixels(), skip)
+            sh.points = [QtCore.QPointF(x, y) for x, y in pts]
+            moved += 1
+            exempted += len(skip)
+        self.canvas.update()
+        self.setDirty()
+        msg = self.tr("Shrink Polygons: %d selected polygon(s) moved %s px") % (moved, dlg.pixels())
+        if dlg.overlap():
+            msg += self.tr("; %d vertex/vertices left untouched (overlap)") % exempted
+        self.status(msg, 10000)
+
+    def shrinkPolygonsOp(self):
+        from labelme import mask_tools, shrink_polygons
+        title = self.tr("Shrink Polygons")
+        if self._reviewPendingBlocked(title):
+            return
+        images = self._maskToolImages()
+        if not images:
+            return
+        json_dir = self.output_dir or None
+        QtWidgets.QApplication.setOverrideCursor(Qt.WaitCursor)  # type: ignore[attr-defined]
+        try:
+            labels = mask_tools.collect_labels(images, json_dir)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        n_selected = len(self.canvas.selectedShapes)
+        dlg = ShrinkPolygonsDialog(list(labels), getattr(self, "_shrink_last", None), self,
+                                   n_selected=n_selected)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        self._shrink_last = dlg.values()
+        if dlg.selectedOnly():
+            self._shrinkSelectedShapes(dlg)
+            return
+        if not self._clearStaleFixed(images, json_dir, title):
+            return
+        try:
+            res = self._runWithProgress(
+                title, shrink_polygons.make_fixed_folder, images, dlg.pixels(),
+                labels=dlg.labels(), overlap=dlg.overlap(), ignore_labels=dlg.ignoreLabels(),
+                slice_start=dlg.sliceStart(), slice_end=dlg.sliceEnd(), json_dir=json_dir,
+            )
+        except Exception as e:
+            logger.exception("Shrink polygons failed")
+            QtWidgets.QMessageBox.critical(self, title, str(e))
+            return
+        if res["cancelled"]:
+            from labelme import mirror_snap
+            mirror_snap.reject_fixed(res["fixed_dirs"])
+            self.status(self.tr("Shrink Polygons cancelled, fixed/ removed"), 8000)
+            return
+        msg = self.tr("Shrink Polygons: %d polygon(s) moved in %d of %d JSON(s); %d without JSON") % (
+            res["runs"], len(res["pending"]), res["scanned"], res["no_json"])
+        if dlg.overlap():
+            msg += self.tr("; %d vertex/vertices left untouched (overlap)") % res["exempted"]
+        if res["skipped_range"]:
+            msg += self.tr("; %d outside slice range") % res["skipped_range"]
+        if res["failed"]:
+            msg += self.tr("; %d failed: %s") % (res["failed"], "; ".join(res["errors"][:3]))
+        if not res["pending"]:
+            msg += self.tr("  Nothing to change.")
+        self._review_title = "Shrink Polygons"
+        self._review_colors = None
+        self._review_filter = set(dlg.labels()) or None
+        self._review_top = None
+        self._setMirrorPending(res["pending"], res["fixed_dirs"])
+        self.status(msg, 15000)
+        QtWidgets.QMessageBox.information(self, title, msg)
+
+    def mirrorConfirmOp(self):
+        from labelme import mirror_snap
+        if not self._mirror_pending:
+            return
+        cur = mirror_snap.json_path_for(self.filename, self.output_dir or None) if self.filename else None
+        if self.dirty and cur in self._mirror_pending:
+            ans = QtWidgets.QMessageBox.question(
+                self, self.tr("Confirm"),
+                self.tr("The current file has unsaved changes that will be lost. Continue?"))
+            if ans != QtWidgets.QMessageBox.Yes:
+                return
+            self.setClean()
+        n = mirror_snap.confirm_fixed(self._mirror_pending, self._mirror_fixed_dirs)
+        self._setMirrorPending({}, set())
+        if self.filename:
+            self.loadFile(self.filename)
+        self.status(self.tr("%s confirmed: %d JSON(s) replaced, fixed/ removed") % (getattr(self, "_review_title", ""), n), 10000)
+
+    def mirrorRejectOp(self):
+        from labelme import mirror_snap
+        if not self._mirror_pending:
+            return
+        mirror_snap.reject_fixed(self._mirror_fixed_dirs)
+        self._setMirrorPending({}, set())
+        self.status(self.tr("%s rejected: fixed/ removed, originals untouched") % getattr(self, "_review_title", ""), 10000)
 
     def _maskToolImages(self):
         """Images the app has loaded (recursive folder scan), or the single open file."""
@@ -3771,6 +4154,7 @@ class MainWindow(QtWidgets.QMainWindow):
             logger.exception("Generate mask failed")
             QtWidgets.QMessageBox.critical(self, title, str(e))
             return None, None
+        res["label_values"] = label_values
         msg = self.tr("Masks: %d of %d written (%d black, no JSON) in %d masks/ folder(s)") % (
             res["written"], res["total"], res["black"], len(res["out_dirs"]))
         if res["failed"]:
@@ -3814,6 +4198,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.tr("Generating overlays"), mask_tools.generate_overlays, images,
                 thickness=self.overlayThicknessSpin.value(),
                 out_root=self._mask_output_dir, base_dir=self.lastOpenDir,
+                value_map=label_colors.value_colors(maskRes.get("label_values") or {}),
             )
         except Exception as e:
             logger.exception("Generate overlay failed")

@@ -1,14 +1,16 @@
 # Custom LabelMe
 
 A modified fork of **LabelMe 5.8.3** built for faster, more ergonomic image annotation.  
-Adds dark mode, viewport-aware keep-previous, pixel painting, batch annotation ops, and more on top of the upstream tool.
+Adds dark mode, viewport-aware keep-previous, pixel painting, batch annotation ops, mask/overlay generation, polygon clean-up tools, and more on top of the upstream tool.
 
 ---
 
 ## Requirements
 
 - Python 3.10
-- PyQt5, Pillow, numpy (installed automatically via `pip install -e .`)
+- PyQt5, Pillow, numpy, OpenCV (headless), onnxruntime, osam 0.2.x (installed automatically via `pip install -e .`)
+
+> `osam` is pinned below 0.3 on purpose. Newer versions removed `osam.types.Model`, which labelme uses.
 
 ---
 
@@ -176,6 +178,49 @@ Toggle. On each image switch, prefixes every annotation with `left_` or `right_`
 
 ---
 
+### Keep Hidden
+`L` (toolbar + View menu) — uncheck a label in **Polygon Labels** and every shape with that label stays hidden on every image. Turn it off to show them again.
+
+---
+
+### Selection Priority
+`Z` (View menu) — when on, hovering or clicking near points prefers the selected shape over shapes on top of it.
+
+---
+
+### Brightness / Contrast Presets
+Inside the Brightness/Contrast dialog: **Save to Preset 1/2** stores the current sliders, **Preset 1/2** restores them. Presets are remembered between sessions.
+
+---
+
+### Split Polygon
+Hold `S` in Edit mode, hover over two points of one polygon, then release `S`. The polygon is cut into two that share those two points.  
+`Esc` cancels. Adjacent points are rejected. `Ctrl+Z` undoes it.
+
+---
+
+### Generate Mask / Generate Overlay
+Second toolbar row.
+
+- **Generate Mask** — opens a window listing every label and its mask value. Known labels start with their default value; labels without one must be given a value (or click **Random Assign**). Masks are written to a `masks/` folder next to the images.
+- **Generate Overlay** — regenerates the masks first, then draws mask outlines on the images into an `overlays/` folder. The **thickness** box accepts decimals (0.5, 1.5, ...).
+- **Output Path...** — choose a different output folder. Shows the default first. Files go straight into `<folder>/masks` and `<folder>/overlays`. Resets to default on every launch.
+- **Show Mask / Show Overlay** — show them beside the image (1x2 or 1x3). They follow next/previous image and share zoom, scroll and flips. Drag the dividers to resize panes.
+
+Overlay and review-pane colours are fixed: flow red, calcification yellow, plaque light green, aneurysm blue. Other labels get a fixed colour from a palette.
+
+---
+
+### Mirror Snap
+Moves points of a big polygon that hug a small polygon's edge to the far side of it. Click **Mirror Snap**, pick the smaller label, bigger label and tolerance.
+
+### Shrink Polygons
+Moves every polygon point toward its centre by N pixels (negative grows). Set distance, labels, overlap/ignore labels and slice range in the window. If polygons are selected, it can apply to just those (applied directly, `Ctrl+Z` undoes it).
+
+**Review flow (Mirror Snap and Shrink Polygons on files):** changed JSONs go to a `fixed/` folder and show in a **Fixed JSON** pane (**Show Fixed** toggles it). **Confirm** replaces the originals with the fixed files. **Reject** deletes `fixed/`. Only one review can be open at a time.
+
+---
+
 ## Keyboard Shortcut Reference
 
 | Feature | Shortcut |
@@ -197,6 +242,10 @@ Toggle. On each image switch, prefixes every annotation with `left_` or `right_`
 | Follow Mouse toggle | `C` |
 | Auto Advance toggle | `T` |
 | Toggle all polygons | `Shift+T` |
+| Keep Hidden toggle | `L` |
+| Selection Priority toggle | `Z` |
+| Split polygon (hold, hover 2 points, release) | `S` |
+| Cancel split | `Esc` while holding `S` |
 
 ---
 

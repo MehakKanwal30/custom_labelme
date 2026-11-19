@@ -11,17 +11,12 @@ import os.path as osp
 import cv2
 import numpy as np
 
+from labelme.label_colors import color_for_value
 from labelme.label_config import COLOR_MAP, resolve_label
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 MASKS_DIRNAME = "masks"
 OVERLAYS_DIRNAME = "overlays"
-
-LABEL_COLORS = {
-    255: (0, 0, 255),
-    80: (0, 255, 0),
-    180: (205, 0, 115),
-}
 
 
 def output_dir_for(image_path, kind, out_root=None, base_dir=None):
@@ -162,15 +157,7 @@ def generate_masks(image_paths, json_dir=None, progress=None, label_values=None,
     return result
 
 
-def _color_for_label(lbl):
-    if lbl in LABEL_COLORS:
-        return LABEL_COLORS[lbl]
-    hsv = np.uint8([[[int((lbl * 35) % 180), 200, 255]]])
-    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
-    return (int(bgr[0]), int(bgr[1]), int(bgr[2]))
-
-
-def _draw_outlines(image, mask, thickness):
+def _draw_outlines(image, mask, thickness, value_map=None):
     """Draw per-label outlines. thickness may be fractional (0.5, 1.5, ...).
 
     Whole-number thickness draws directly. Fractional thickness draws the lines on a
@@ -197,7 +184,7 @@ def _draw_outlines(image, mask, thickness):
         )
         if not contours:
             continue
-        color = _color_for_label(lbl)
+        color = color_for_value(lbl, value_map)
         if k > 1:
             contours = [c.astype(np.int32) * k + (k - 1) // 2 for c in contours]
             cv2.drawContours(alpha, contours, -1, 255, thickness=t, lineType=cv2.LINE_AA)
@@ -211,7 +198,8 @@ def _draw_outlines(image, mask, thickness):
     return np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
 
-def generate_overlays(image_paths, thickness=1, progress=None, out_root=None, base_dir=None):
+def generate_overlays(image_paths, thickness=1, progress=None, out_root=None, base_dir=None,
+                      value_map=None):
     """Draw outlines from <image dir>/masks onto each image -> <image dir>/overlays."""
     image_paths = list(image_paths)
     result = dict(written=0, missing_masks=0, failed=0, out_dirs=set(),
@@ -241,7 +229,7 @@ def generate_overlays(image_paths, thickness=1, progress=None, out_root=None, ba
             continue
         seen.add(target)
         os.makedirs(out_dir, exist_ok=True)
-        _write_image(osp.join(out_dir, f"{stem}.png"), _draw_outlines(image, mask, thickness))
+        _write_image(osp.join(out_dir, f"{stem}.png"), _draw_outlines(image, mask, thickness, value_map))
         result["written"] += 1
         result["out_dirs"].add(out_dir)
     if progress and not result["cancelled"]:

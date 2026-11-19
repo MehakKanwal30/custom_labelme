@@ -35,6 +35,8 @@ class Canvas(QtWidgets.QWidget):
     shapeMoved = QtCore.pyqtSignal()
     drawingPolygon = QtCore.pyqtSignal(bool)
     vertexSelected = QtCore.pyqtSignal(bool)
+    splitRequested = QtCore.pyqtSignal(object, int, int)  # shape, vertex index A, vertex index B
+    splitMessage = QtCore.pyqtSignal(str)
     mouseMoved = QtCore.pyqtSignal(QtCore.QPointF)
 
     CREATE, EDIT = 0, 1
@@ -121,6 +123,8 @@ class Canvas(QtWidgets.QWidget):
         self.prevhShape = None
         self.hVertex = None
         self.prevhVertex = None
+        self.splitMode = False  # S held: hover two points of one polygon to split it
+        self.splitPicks = []  # [(shape, vertex index)], most recent last
         self.hEdge = None
         self.prevhEdge = None
         self.movingShape = False
@@ -191,6 +195,19 @@ class Canvas(QtWidgets.QWidget):
         logger.debug("Setting AI model to {!r}", model_name)
         self._ai_model_name = model_name
 
+    def _movedSinceBackup(self, index):
+        """True if shape `index` differs from the last stored state.
+
+        The shape list can change size without storeShapes() (split, delete, paste go
+        through _backupShapes), so the last backup may be shorter than self.shapes or
+        empty. Treat any such mismatch as 'changed' instead of raising IndexError."""
+        if not self.shapesBackups:
+            return True
+        last = self.shapesBackups[-1]
+        if index >= len(last) or len(last) != len(self.shapes):
+            return True
+        return last[index].points != self.shapes[index].points
+
     def storeShapes(self):
         shapesBackup = []
         for shape in self.shapes:
@@ -220,6 +237,7 @@ class Canvas(QtWidgets.QWidget):
         self.restoreCursor()
 
     def focusOutEvent(self, ev):
+        self._cancelSplit()
         self.restoreCursor()
 
     def isVisible(self, shape):  # type: ignore[override]
@@ -493,6 +511,69 @@ class Canvas(QtWidgets.QWidget):
         else:  # Nothing found, clear highlights, reset state.
             self.unHighlight()
         self.vertexSelected.emit(self.hVertex is not None)
+        if self.splitMode and self.hVertex is not None and self.hShape is not None:
+            self._recordSplitPick(self.hShape, self.hVertex)
+
+    # ── Split polygon (hold S, hover two points of one polygon, release S) ────
+
+    def _startSplit(self):
+        self.splitMode = True
+        self.splitPicks = []
+        self.splitMessage.emit(
+            self.tr("Split: hover over two points of one polygon, then release S (Esc cancels)"))
+        if self.hVertex is not None and self.hShape is not None:
+            self._recordSplitPick(self.hShape, self.hVertex)
+        self.update()
+
+    def _cancelSplit(self):
+        if self.splitMode:
+            self.splitMode = False
+            self.splitPicks = []
+            self.update()
+
+    def _recordSplitPick(self, shape, index):
+        if shape.shape_type != "polygon":
+            return
+        pick = (shape, index)
+        if self.splitPicks and self.splitPicks[-1][0] is shape and self.splitPicks[-1][1] == index:
+            return
+        if self.splitPicks and self.splitPicks[-1][0] is not shape:
+            self.splitPicks = []  # moved to another polygon: start over there
+        self.splitPicks.append(pick)
+        self.splitPicks = self.splitPicks[-2:]
+        self.update()
+
+    def _finishSplit(self):
+        picks, self.splitPicks = self.splitPicks, []
+        self.splitMode = False
+        self.update()
+        if len(picks) < 2:
+            self.splitMessage.emit(self.tr("Split cancelled: pick two points of the same polygon"))
+            return
+        (shape, i), (_, j) = picks[-2], picks[-1]
+        self.splitRequested.emit(shape, i, j)
+
+    def _paintSplitPreview(self, p):
+        """Mark the picked points and the cut line (same coordinate state as shape painting)."""
+        if not self.splitMode or not self.splitPicks:
+            return
+        flip_h = getattr(self, "flip_horizontal", False)
+        flip_v = getattr(self, "flip_vertical", False)
+        pts = []
+        for shape, idx in self.splitPicks:
+            pt = shape.points[idx]
+            x = (self.pixmap.width() - pt.x()) if flip_h else pt.x()
+            y = (self.pixmap.height() - pt.y()) if flip_v else pt.y()
+            pts.append(QtCore.QPointF(x * self.scale, y * self.scale))
+        pen = QtGui.QPen(QtGui.QColor(255, 0, 255))
+        pen.setWidth(2)
+        p.setPen(pen)
+        if len(pts) == 2:
+            p.drawLine(pts[0], pts[1])
+        p.setBrush(QtGui.QColor(255, 255, 255))
+        for pt in pts:
+            p.drawEllipse(pt, 5, 5)
+        p.setBrush(QtCore.Qt.NoBrush)
 
     def addPointToEdge(self):
         shape = self.prevhShape
@@ -734,7 +815,7 @@ class Canvas(QtWidgets.QWidget):
 
         if self.movingShape and self.hShape and self.hShape in self.shapes:
             index = self.shapes.index(self.hShape)
-            if self.shapesBackups[-1][index].points != self.shapes[index].points:
+            if self._movedSinceBackup(index):
                 self.storeShapes()
                 self.shapeMoved.emit()
 
@@ -999,6 +1080,8 @@ class Canvas(QtWidgets.QWidget):
                     self._paint_shape_maybe_flipped(p, shape, flip_h=False, flip_v=False)
                 else:
                     self._paint_shape_maybe_flipped(p, shape)
+
+        self._paintSplitPreview(p)
 
         if self.current:
             if show_original:
@@ -1307,6 +1390,14 @@ class Canvas(QtWidgets.QWidget):
     def keyPressEvent(self, ev):
         modifiers = ev.modifiers()
         key = ev.key()
+        if (key == QtCore.Qt.Key_S and not ev.isAutoRepeat() and int(modifiers) == 0  # type: ignore[attr-defined]
+                and self.editing() and not self.drawing() and self.pixmap):
+            self._startSplit()
+            return
+        if key == QtCore.Qt.Key_Escape and self.splitMode:  # type: ignore[attr-defined]
+            self._cancelSplit()
+            self.splitMessage.emit(self.tr("Split cancelled"))
+            return
         if self.drawing():
             #EDITED PIXEL PAINT
             if self.createMode == "pixelpaint":
@@ -1340,6 +1431,9 @@ class Canvas(QtWidgets.QWidget):
 
     def keyReleaseEvent(self, ev):
         modifiers = ev.modifiers()
+        if ev.key() == QtCore.Qt.Key_S and not ev.isAutoRepeat() and self.splitMode:  # type: ignore[attr-defined]
+            self._finishSplit()
+            return
         if self.drawing():
             if int(modifiers) == 0:
                 self.snapping = True
@@ -1350,7 +1444,7 @@ class Canvas(QtWidgets.QWidget):
                     self.movingShape = False
                     return
                 index = self.shapes.index(shape)
-                if self.shapesBackups[-1][index].points != self.shapes[index].points:
+                if self._movedSinceBackup(index):
                     self.storeShapes()
                     self.shapeMoved.emit()
 

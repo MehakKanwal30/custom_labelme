@@ -57,13 +57,36 @@ class ReferenceView(QtWidgets.QScrollArea):
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setMinimumWidth(120)
-        self._target = (0, 0)
+        self._center = (0.0, 0.0)  # image-space point to keep in the middle of this pane
         self.horizontalScrollBar().rangeChanged.connect(self._applyTarget)
         self.verticalScrollBar().rangeChanged.connect(self._applyTarget)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._applyTarget()  # pane resized by the splitter: re-centre, same zoom
+
     def _applyTarget(self, *_):
-        self.horizontalScrollBar().setValue(int(self._target[0]))
-        self.verticalScrollBar().setValue(int(self._target[1]))
+        s = self.surface
+        if not s.pixmap:
+            return
+        vp = self.viewport()
+        sc = s.scale
+        # same centring rule as Canvas.offsetToCenter (surface is at least viewport-sized)
+        w, h = s.pixmap.width() * sc, s.pixmap.height() * sc
+        ox = (max(vp.width(), w) - w) / (2 * sc)
+        oy = (max(vp.height(), h) - h) / (2 * sc)
+        self.horizontalScrollBar().setValue(int((self._center[0] + ox) * sc - vp.width() / 2))
+        self.verticalScrollBar().setValue(int((self._center[1] + oy) * sc - vp.height() / 2))
+
+    def setPixmap(self, pixmap, message=""):
+        """Show an already-rendered pixmap (same size as the image) or a message."""
+        if pixmap is None or pixmap.isNull():
+            self.surface.pixmap = None
+            self.surface.message = message
+        else:
+            self.surface.pixmap = pixmap
+        self.surface.updateGeometry()
+        self.surface.update()
 
     def setImagePath(self, path):
         pm = QtGui.QPixmap(path) if path else QtGui.QPixmap()
@@ -75,10 +98,11 @@ class ReferenceView(QtWidgets.QScrollArea):
         self.surface.updateGeometry()
         self.surface.update()
 
-    def syncView(self, scale, flip_h, flip_v, h_value, v_value):
+    def syncView(self, scale, flip_h, flip_v, center_x, center_y):
+        """center_x/y: image-space point at the middle of the main view."""
         s = self.surface
         s.scale, s.flip_h, s.flip_v = scale, flip_h, flip_v
         s.updateGeometry()
         s.update()
-        self._target = (h_value, v_value)
+        self._center = (center_x, center_y)
         self._applyTarget()
