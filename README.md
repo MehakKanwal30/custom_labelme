@@ -10,8 +10,6 @@ Adds dark mode, viewport-aware keep-previous, pixel painting, batch annotation o
 - Python 3.10
 - PyQt5, Pillow, numpy, OpenCV (headless), onnxruntime, osam 0.2.x (installed automatically via `pip install -e .`)
 
-> `osam` is pinned below 0.3 on purpose. Newer versions removed `osam.types.Model`, which labelme uses.
-
 ---
 
 ## Installation
@@ -245,7 +243,6 @@ Moves every polygon point toward its centre by N pixels (negative grows). Set di
 | Keep Hidden toggle | `L` |
 | Selection Priority toggle | `Z` |
 | Split polygon (hold, hover 2 points, release) | `S` |
-| Cancel split | `Esc` while holding `S` |
 
 ---
 
