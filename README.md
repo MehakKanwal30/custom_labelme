@@ -8,7 +8,7 @@ Adds dark mode, viewport-aware keep-previous, pixel painting, batch annotation o
 ## Requirements
 
 - Python 3.10
-- PyQt5, Pillow, numpy, OpenCV (headless), onnxruntime, osam 0.2.x (installed automatically via `pip install -e .`)
+- PyQt5, Pillow, numpy, OpenCV (headless), pydicom, onnxruntime, osam 0.2.x (installed automatically via `pip install -e .`)
 
 ---
 
@@ -201,11 +201,17 @@ Hold `S` in Edit mode, hover over two points of one polygon, then release `S`. T
 Second toolbar row.
 
 - **Generate Mask** — opens a window listing every label and its mask value. Known labels start with their default value; labels without one must be given a value (or click **Random Assign**). Masks are written to a `masks/` folder next to the images.
-- **Generate Overlay** — regenerates the masks first, then draws mask outlines on the images into an `overlays/` folder. The **thickness** box accepts decimals (0.5, 1.5, ...).
+- **Generate Overlay** — regenerates the masks first, then draws mask outlines on the images into an `overlays/` folder. The **thickness** box accepts decimals (0.5, 1.5, ...). Tick **Use HU window** to draw on the DICOM re-windowed to your HU window (needs a custom window and the DICOM folder; otherwise the normal image is used).
 - **Output Path...** — choose a different output folder. Shows the default first. Files go straight into `<folder>/masks` and `<folder>/overlays`. Resets to default on every launch.
 - **Show Mask / Show Overlay** — show them beside the image (1x2 or 1x3). They follow next/previous image and share zoom, scroll and flips. Drag the dividers to resize panes.
 
 Overlay and review-pane colours are fixed: flow red, calcification yellow, plaque light green, aneurysm blue. Other labels get a fixed colour from a palette.
+
+---
+
+### HU Window
+Second toolbar row: **Show HU** opens a pane beside the image showing the slice re-windowed to a low / high HU you choose. The pane works like the main window: draw, select, move points or shapes, split (`S`), right-click menus and every mode work in it, and both views stay in sync. Zoom and scroll follow the main view.  
+Click the small **HU: low .. high** button to open the HU window: type low / high, or window width / level (each pair updates the other, and the pane updates as you type), pick a saved **preset**, **Save as new preset**, rename, overwrite or delete presets, and set the **DICOM folder**. It works with any study: pick the folder that holds the DICOMs (a single series folder, or a folder of case/study folders). The DICOM for the open image is found by file name, or by the number at the end of the image name matching the DICOM's InstanceNumber (use **Slice offset** if your numbering is shifted). Requires `pydicom`.
 
 ---
 

@@ -9,8 +9,8 @@
 
 LABEL_MAP = {
     #  canonical key    mask gray   segment display name    segment RGB
-    "flow":          {"mask_gray": 245, "segment_name": "artery",        "segment_rgb": [255,   0,   0]},
-    "plaque":        {"mask_gray": 128, "segment_name": "plaque",        "segment_rgb": [255, 206,   0]},
+    "flow":          {"mask_gray": 180, "segment_name": "artery",        "segment_rgb": [255,   0,   0]},
+    "plaque":        {"mask_gray":  80, "segment_name": "plaque",        "segment_rgb": [255, 206,   0]},
     "calcification": {"mask_gray": 255, "segment_name": "calcification", "segment_rgb": [255, 238, 170]},
     "thrombus":      {"mask_gray": 102, "segment_name": "thrombus",      "segment_rgb": [ 85,   0,   0]},
     "reconstructed": {"mask_gray":  51, "segment_name": "reconstructed", "segment_rgb": [  0, 255,   0]},

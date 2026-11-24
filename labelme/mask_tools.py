@@ -157,6 +157,31 @@ def generate_masks(image_paths, json_dir=None, progress=None, label_values=None,
     return result
 
 
+def _component_outlines(mask):
+    """[(area, label value, contour)] for every connected shape in the mask, largest first.
+
+    RETR_CCOMP returns the outer boundary of every component, including components that
+    sit inside a hole of another component with the same value (a small aneurysm inside
+    a flow polygon inside a big aneurysm). RETR_EXTERNAL would silently drop those.
+    Hole boundaries (hierarchy parent != -1) are skipped, so the inner edge of a ring is
+    not drawn twice: the shape inside it draws its own outline."""
+    items = []
+    for lbl in np.unique(mask):
+        lbl = int(lbl)
+        if lbl == 0:
+            continue
+        contours, hierarchy = cv2.findContours(
+            (mask == lbl).astype(np.uint8) * 255, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if hierarchy is None:
+            continue
+        for contour, info in zip(contours, hierarchy[0]):
+            if info[3] == -1:
+                items.append((abs(cv2.contourArea(contour)), lbl, contour))
+    items.sort(key=lambda t: -t[0])  # big shapes first, so small inner shapes are drawn on top
+    return items
+
+
 def _draw_outlines(image, mask, thickness, value_map=None):
     """Draw per-label outlines. thickness may be fractional (0.5, 1.5, ...).
 
@@ -175,18 +200,11 @@ def _draw_outlines(image, mask, thickness, value_map=None):
 
     layer = np.zeros((h * k, w * k, 3), np.uint8) if k > 1 else image
     alpha = np.zeros((h * k, w * k), np.uint8) if k > 1 else None
-    for lbl in np.unique(mask)[1:] if mask.min() == 0 else np.unique(mask):
-        lbl = int(lbl)
-        if lbl == 0:
-            continue
-        contours, _ = cv2.findContours(
-            (mask == lbl).astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        if not contours:
-            continue
+    for _area, lbl, contour in _component_outlines(mask):
         color = color_for_value(lbl, value_map)
+        contours = [contour]
         if k > 1:
-            contours = [c.astype(np.int32) * k + (k - 1) // 2 for c in contours]
+            contours = [contour.astype(np.int32) * k + (k - 1) // 2]
             cv2.drawContours(alpha, contours, -1, 255, thickness=t, lineType=cv2.LINE_AA)
         cv2.drawContours(layer, contours, -1, color, thickness=t, lineType=cv2.LINE_AA)
     if k == 1:
@@ -199,11 +217,14 @@ def _draw_outlines(image, mask, thickness, value_map=None):
 
 
 def generate_overlays(image_paths, thickness=1, progress=None, out_root=None, base_dir=None,
-                      value_map=None):
-    """Draw outlines from <image dir>/masks onto each image -> <image dir>/overlays."""
+                      value_map=None, image_loader=None):
+    """Draw outlines from <image dir>/masks onto each image -> <image dir>/overlays.
+
+    image_loader(path) may return a replacement background (e.g. the HU-windowed DICOM)
+    of the same size as the image; None means "use the PNG itself"."""
     image_paths = list(image_paths)
     result = dict(written=0, missing_masks=0, failed=0, out_dirs=set(),
-                  cancelled=False, total=len(image_paths), collisions=[])
+                  cancelled=False, total=len(image_paths), collisions=[], hu_used=0, hu_fallback=0)
     seen = set()
     for i, path in enumerate(image_paths):
         if progress and progress(i, len(image_paths), osp.basename(path)) is False:
@@ -220,6 +241,13 @@ def generate_overlays(image_paths, thickness=1, progress=None, out_root=None, ba
         if image is None or mask is None:
             result["failed"] += 1
             continue
+        if image_loader is not None:
+            alt = image_loader(path)
+            if alt is not None and alt.shape[:2] == image.shape[:2]:
+                image = np.ascontiguousarray(alt)
+                result["hu_used"] += 1
+            else:
+                result["hu_fallback"] += 1  # no DICOM / size mismatch: keep the PNG
         if mask.shape[:2] != image.shape[:2]:
             mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
         out_dir = output_dir_for(path, OVERLAYS_DIRNAME, out_root, base_dir)

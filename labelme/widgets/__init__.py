@@ -24,3 +24,8 @@ from .reference_view import ReferenceView
 from .mask_label_dialog import MaskLabelDialog
 from .mirror_snap_dialog import MirrorSnapDialog
 from .shrink_polygons_dialog import ShrinkPolygonsDialog
+from .hu_view import HuCanvas
+from .hu_view import HuView
+from .hu_window_dialog import HuWindowDialog
+from .dir_dialog import get_existing_directory
+from .dir_dialog import slim_file_dialog

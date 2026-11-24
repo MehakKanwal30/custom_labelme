@@ -40,6 +40,10 @@ from labelme.widgets import LabelListWidgetItem
 from labelme.widgets import MaskLabelDialog
 from labelme.widgets import MirrorSnapDialog
 from labelme.widgets import ShrinkPolygonsDialog
+from labelme.widgets import HuView
+from labelme.widgets import get_existing_directory
+from labelme.widgets import slim_file_dialog
+from labelme.widgets import HuWindowDialog
 from labelme.widgets import ReferenceView
 from labelme.widgets import ToolBar
 from labelme.widgets import UniqueLabelQListWidget
@@ -227,12 +231,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.maskView = ReferenceView("Mask")
         self.overlayView = ReferenceView("Overlay")
         self.fixedView = ReferenceView("Fixed JSON")
+        self.huView = HuView(
+            self.canvas,
+            epsilon=self._config["epsilon"],
+            double_click=self._config["canvas"]["double_click"],
+            num_backups=self._config["canvas"]["num_backups"],
+            crosshair=self._config["canvas"]["crosshair"],
+        )
+        self.huView.hide()
+        self.huView.canvas.zoomRequest.connect(self._huZoomRequest)
+        self.huView.canvas.scrollRequest.connect(self.scrollRequest)
         self.maskView.hide()
         self.overlayView.hide()
         self.fixedView.hide()
         self.viewSplitter = QtWidgets.QSplitter(Qt.Horizontal)  # type: ignore[attr-defined]
         self.viewSplitter.setChildrenCollapsible(False)
         self.viewSplitter.addWidget(scrollArea)
+        self.viewSplitter.addWidget(self.huView)
         self.viewSplitter.addWidget(self.maskView)
         self.viewSplitter.addWidget(self.overlayView)
         self.viewSplitter.addWidget(self.fixedView)
@@ -992,6 +1007,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 row.addWidget(lbl)
                 row.addWidget(spin)
                 lay.addLayout(row)
+                self.overlayHuCheck = QtWidgets.QCheckBox(self.tr("Use HU window"))
+                self.overlayHuCheck.setFont(f)
+                self.overlayHuCheck.setFixedHeight(_OP_SUB_H)
+                self.overlayHuCheck.setToolTip(self.tr(
+                    "Draw the overlay on the DICOM re-windowed to your HU window (HU window dialog)\n"
+                    "instead of the PNG. If no custom HU window / DICOM folder is set, or an image has\n"
+                    "no matching DICOM, the normal image is used."))
+                lay.addWidget(self.overlayHuCheck)
             else:
                 lay.addSpacing(_OP_SUB_H)
             widget.setDefaultWidget(container)
@@ -1049,6 +1072,42 @@ class MainWindow(QtWidgets.QMainWindow):
             _b.toggled.connect(self._updateReferenceViews)
             _svLayout.addWidget(_b)
         showViewsWidget.setDefaultWidget(_svContainer)
+
+        # HU window: Show HU toggle + a small button that opens the HU window dialog
+        huWidget = QtWidgets.QWidgetAction(self)
+        _huContainer = QtWidgets.QWidget()
+        _huContainer.setFixedWidth(_OP_BTN_W)
+        _huLayout = QtWidgets.QVBoxLayout(_huContainer)
+        _huLayout.setContentsMargins(2, 1, 2, 1)
+        _huLayout.setSpacing(1)
+        self.showHuBtn = QtWidgets.QPushButton(self.tr("Show HU"))
+        self.showHuBtn.setCheckable(True)
+        self.showHuBtn.setToolTip(self.tr(
+            "Show the image re-windowed to your low / high HU (read from the DICOMs) beside the\n"
+            "main view. Polygons are shown and editable there too."))
+        self.showHuBtn.setFixedSize(_OP_BTN_W - 4, _OP_BTN_H)
+        self.showHuBtn.toggled.connect(self._onShowHuToggled)
+        _huFont = QtGui.QFont()
+        _huFont.setPointSize(_OP_SUB_PT)
+        self.huWindowBtn = QtWidgets.QPushButton()
+        self.huWindowBtn.setFont(_huFont)
+        self.huWindowBtn.setFixedHeight(_OP_SUB_H)
+        self.huWindowBtn.setToolTip(self.tr("Set the HU window, choose or save presets, set the DICOM folder"))
+        self.huWindowBtn.clicked.connect(self.openHuWindowDialog)
+        _huLayout.addWidget(self.showHuBtn)
+        _huLayout.addWidget(self.huWindowBtn)
+        _huLayout.addSpacing(_OP_SUB_H)
+        self._hu_low, self._hu_high = -500, 1300
+        self._hu_offset = 0
+        self._hu_presets = []
+        self._hu_dialog = None
+        self._refreshHuButton()
+        huWidget.setDefaultWidget(_huContainer)
+        self._hu_dicom_root = ""
+        self._hu_timer = QtCore.QTimer(self)
+        self._hu_timer.setSingleShot(True)
+        self._hu_timer.setInterval(40)
+        self._hu_timer.timeout.connect(self._updateHuImage)
 
         # Mirror Snap: run button + small/big label boxes, then Confirm / Reject / Show Fixed
         mirrorSnapWidget = QtWidgets.QWidgetAction(self)
@@ -1543,6 +1602,7 @@ class MainWindow(QtWidgets.QMainWindow):
             outputPathWidget,
             None,
             showViewsWidget,
+            huWidget,
             None,
             mirrorSnapWidget,
             mirrorReviewWidget,
@@ -1614,6 +1674,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.remove("mask/output_dir")
         self._mask_output_dir = ""
         self._refreshMaskOutputLabel()
+        # DICOM folder, HU window and slice offset are per-session: always start from the
+        # defaults and drop values saved by older builds. Presets are kept.
+        for _key in ("hu/dicom_root", "hu/low", "hu/high", "hu/offset"):
+            self.settings.remove(_key)
+        self._hu_dicom_root = ""
+        self._hu_low, self._hu_high, self._hu_offset = -500, 1300, 0
+        try:
+            self._hu_presets = [
+                {"name": str(p["name"]), "low": int(p["low"]), "high": int(p["high"])}
+                for p in json.loads(self.settings.value("hu/presets", "[]") or "[]")
+            ]
+        except (ValueError, TypeError, KeyError):
+            self._hu_presets = []
+        self._refreshHuButton()
         self.recentFiles = self.settings.value("recentFiles", []) or []
         size = self.settings.value("window/size", QtCore.QSize(600, 500))
         position = self.settings.value("window/position", QtCore.QPoint(0, 0))
@@ -3105,6 +3179,7 @@ class MainWindow(QtWidgets.QMainWindow):
             formats + ["*%s" % LabelFile.suffix]
         )
         fileDialog = FileDialogPreview(self)
+        slim_file_dialog(fileDialog, self.currentPath())
         fileDialog.setFileMode(FileDialogPreview.ExistingFile)
         fileDialog.setNameFilter(filters)
         fileDialog.setWindowTitle(
@@ -3124,12 +3199,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if default_output_dir is None:
             default_output_dir = self.currentPath()
 
-        output_dir = QtWidgets.QFileDialog.getExistingDirectory(
+        output_dir = get_existing_directory(
             self,
             self.tr("%s - Save/Load Annotations in Directory") % __appname__,
             default_output_dir,
-            QtWidgets.QFileDialog.ShowDirsOnly
-            | QtWidgets.QFileDialog.DontResolveSymlinks,
         )
         output_dir = str(output_dir)
 
@@ -3287,11 +3360,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._config["keep_prev"] = not self._config["keep_prev"]
 
     def removeSelectedPoint(self):
+        # Nothing to do unless the mouse last hovered a vertex (otherwise the canvas
+        # leaves hShape as None and the old code crashed on hShape.points).
+        shape = self.canvas.prevhShape
+        if shape is None or self.canvas.prevhVertex is None:
+            self.status(self.tr("Hover over a point first, then press the remove key"), 5000)
+            return
         self.canvas.removeSelectedPoint()
         self.canvas.update()
-        if not self.canvas.hShape.points:  # type: ignore[union-attr]
-            self.canvas.deleteShape(self.canvas.hShape)
-            self.remLabels([self.canvas.hShape])
+        if not shape.points:
+            self.canvas.deleteShape(shape)
+            self.remLabels([shape])
             if self.noShapes():
                 for action in self.actions.onShapesPresent:  # type: ignore[attr-defined]
                     action.setEnabled(False)
@@ -3357,12 +3436,10 @@ class MainWindow(QtWidgets.QMainWindow):
             defaultOpenDirPath = osp.dirname(self.filename) if self.filename else "."
 
         targetDirPath = str(
-            QtWidgets.QFileDialog.getExistingDirectory(
+            get_existing_directory(
                 self,
                 self.tr("%s - Open Directory") % __appname__,
                 defaultOpenDirPath,
-                QtWidgets.QFileDialog.ShowDirsOnly
-                | QtWidgets.QFileDialog.DontResolveSymlinks,
             )
         )
         self.importDirImages(targetDirPath)
@@ -3666,6 +3743,8 @@ class MainWindow(QtWidgets.QMainWindow):
         showMask = self.showMaskBtn.isChecked()
         showOverlay = self.showOverlayBtn.isChecked()
         showFixed = self.showFixedBtn.isChecked() and bool(self._mirror_pending)
+        showHu = self.showHuBtn.isChecked()
+        self.huView.setVisible(showHu)
         self.maskView.setVisible(showMask)
         self.overlayView.setVisible(showOverlay)
         self.fixedView.setVisible(showFixed)
@@ -3679,8 +3758,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 mask_tools.output_dir_for(self.filename, "overlays", root, base), stem + ".png"))
             if showFixed:
                 self._updateFixedView()
-        state = (showMask, showOverlay, showFixed)
-        changed = state != getattr(self, "_refPaneState", (False, False, False))
+            if showHu:
+                self._updateHuImage()
+        state = (showHu, showMask, showOverlay, showFixed)
+        changed = state != getattr(self, "_refPaneState", (False, False, False, False))
         self._refPaneState = state
         # only equalise when panes are toggled; keep user-dragged widths on image changes
         if any(state) and changed:
@@ -3692,7 +3773,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QTimer.singleShot(0, self._syncReferenceViews)
 
     def _syncReferenceViews(self):
-        views = (self.maskView, self.overlayView, self.fixedView)
+        views = (self.huView, self.maskView, self.overlayView, self.fixedView)
         if all(v.isHidden() for v in views):
             return
         # image-space point at the middle of the main viewport; panes keep it centred
@@ -3713,6 +3794,133 @@ class MainWindow(QtWidgets.QMainWindow):
         for view in views:
             if not view.isHidden():
                 view.syncView(*args)
+
+    # ── HU window pane ────────────────────────────────────────────────────────
+
+    def _refreshHuButton(self):
+        self.huWindowBtn.setText(self.tr("HU: %d .. %d") % (self._hu_low, self._hu_high))
+
+    def openHuWindowDialog(self):
+        """Modeless window: the HU pane updates live while it is open."""
+        if self._hu_dialog is None:
+            dlg = HuWindowDialog(self._hu_low, self._hu_high, self._hu_presets, self._hu_dicom_root, self,
+                                 offset=self._hu_offset)
+            dlg.windowChanged.connect(self._setHuWindow)
+            dlg.offsetChanged.connect(self._setHuOffset)
+            dlg.presetsChanged.connect(self._huPresetsChanged)
+            dlg.dicomRootRequested.connect(lambda: self.chooseDicomRoot(force=True))
+            self._hu_dialog = dlg
+        else:
+            self._hu_dialog.setValues(self._hu_low, self._hu_high)
+            self._hu_dialog.setDicomRoot(self._hu_dicom_root)
+        self._hu_dialog.show()
+        self._hu_dialog.raise_()
+        self._hu_dialog.activateWindow()
+
+    def _setHuWindow(self, low, high):
+        self._hu_low, self._hu_high = int(low), int(high)
+        self._refreshHuButton()
+        if self.showHuBtn.isChecked():
+            self._hu_timer.start()  # coalesce rapid changes
+
+    def _setHuOffset(self, offset):
+        self._hu_offset = int(offset)
+        if self.showHuBtn.isChecked():
+            self._hu_timer.start()
+
+    def _huPresetsChanged(self, presets):
+        self._hu_presets = presets
+        self.settings.setValue("hu/presets", json.dumps(presets))
+
+    def chooseDicomRoot(self, force=False):
+        """Ask for the folder holding <case>/ DICOM folders. Returns True if one is set."""
+        if self._hu_dicom_root and not force:
+            return True
+        from labelme import hu_tools
+        start = self._hu_dicom_root or (osp.dirname(self.filename) if self.filename else "")
+        d = get_existing_directory(
+            self, self.tr("Select the DICOM root folder (contains one folder per case)"), start)
+        if not d:
+            return bool(self._hu_dicom_root)
+        self._hu_dicom_root = d
+        hu_tools.clear_cache()
+        if self._hu_dialog is not None:
+            self._hu_dialog.setDicomRoot(d)
+        if self.showHuBtn.isChecked():
+            self._updateHuImage()
+        return True
+
+    def _onShowHuToggled(self, checked):
+        if checked and not self._hu_dicom_root:
+            if not self.chooseDicomRoot():
+                self.showHuBtn.blockSignals(True)
+                self.showHuBtn.setChecked(False)
+                self.showHuBtn.blockSignals(False)
+                return
+        self._updateReferenceViews()
+
+    def _updateHuImage(self):
+        """Render the current slice with the chosen window into the HU pane."""
+        if not self.showHuBtn.isChecked() or not self.filename:
+            return
+        from labelme import hu_tools
+        try:
+            QtWidgets.QApplication.setOverrideCursor(Qt.WaitCursor)  # type: ignore[attr-defined]
+            try:  # the first lookup in a folder scans it, which can take a few seconds
+                path, why, desc = hu_tools.find_dicom(self._hu_dicom_root, self.filename, self._hu_offset)
+                hu = hu_tools.load_hu(path) if path else None
+            finally:
+                QtWidgets.QApplication.restoreOverrideCursor()
+            if path is None:
+                self.huView.setHuPixmap(None, self.tr("No HU image: %s") % why)
+                return
+        except ImportError:
+            self.huView.setHuPixmap(None, self.tr("pydicom is not installed (pip install pydicom)"))
+            return
+        except Exception as e:
+            logger.exception("HU load failed")
+            self.huView.setHuPixmap(None, self.tr("Cannot read DICOM: %s") % e)
+            return
+        if not self.image.isNull() and (hu.shape[1], hu.shape[0]) != (self.image.width(), self.image.height()):
+            self.huView.setHuPixmap(None, self.tr("DICOM size %dx%d differs from the image %dx%d") % (
+                hu.shape[1], hu.shape[0], self.image.width(), self.image.height()))
+            return
+        arr = np.ascontiguousarray(hu_tools.window_to_uint8(hu, self._hu_low, self._hu_high))
+        qimg = QtGui.QImage(arr.data, arr.shape[1], arr.shape[0], arr.shape[1], QtGui.QImage.Format_Grayscale8).copy()
+        self.huView.setHuPixmap(QtGui.QPixmap.fromImage(qimg))
+        self.huView.setToolTip(self.tr("HU from %s") % desc)
+        self.status(self.tr("HU window %d .. %d from %s") % (self._hu_low, self._hu_high, desc), 6000)
+        self._syncReferenceViews()
+
+    def _huZoomRequest(self, delta, pos):
+        """Ctrl+wheel over the HU pane: zoom keeping the image point under the cursor in place."""
+        hv, c = self.huView, self.huView.canvas
+        if c.pixmap.isNull():
+            return
+        s0 = c.scale
+        off = c.offsetToCenter()
+        px, py = pos.x() / s0 - off.x(), pos.y() / s0 - off.y()  # image point under the cursor
+        vp = hv.viewport()
+        dx = pos.x() - (hv.horizontalScrollBar().value() + vp.width() / 2)  # cursor offset from pane centre
+        dy = pos.y() - (hv.verticalScrollBar().value() + vp.height() / 2)
+        self.addZoom(1.1 if delta > 0 else 0.9)
+        s1 = self.canvas.scale
+        # the HU pane is centred on the main view's centre, so move the main view
+        self._pending_main_center = (px - dx / s1, py - dy / s1)
+        QTimer.singleShot(0, self._applyPendingMainCenter)
+        QTimer.singleShot(60, lambda: self._applyPendingMainCenter(final=True))
+
+    def _applyPendingMainCenter(self, final=False):
+        pending = getattr(self, "_pending_main_center", None)
+        if pending is None:
+            return
+        sc = self.canvas.scale
+        off = self.canvas.offsetToCenter()
+        vp = self.scrollArea.viewport()
+        self.setScroll(Qt.Horizontal, (pending[0] + off.x()) * sc - vp.width() / 2)  # type: ignore[attr-defined]
+        self.setScroll(Qt.Vertical, (pending[1] + off.y()) * sc - vp.height() / 2)  # type: ignore[attr-defined]
+        if final:
+            self._pending_main_center = None
 
     # ── Mirror Snap (fixed JSON review) ───────────────────────────────────────
 
@@ -4087,7 +4295,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def _browse():
             start = edit.text() or (osp.dirname(self.filename) if self.filename else "")
-            d = QtWidgets.QFileDialog.getExistingDirectory(dlg, self.tr("Select output folder"), start)
+            d = get_existing_directory(dlg, self.tr("Select output folder"), start)
             if d:
                 edit.setText(d)
 
@@ -4193,12 +4401,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self._updateReferenceViews()
             QtWidgets.QMessageBox.information(self, title, self.tr("Cancelled during mask generation. ") + maskMsg)
             return
+        # optional: draw on the HU-windowed DICOM instead of the PNG
+        from labelme import hu_tools
+        image_loader, hu_note = None, ""
+        if self.overlayHuCheck.isChecked():
+            if hu_tools.is_default_window(self._hu_low, self._hu_high):
+                hu_note = self.tr("HU: no custom window set, used the normal images")
+            elif not self._hu_dicom_root:
+                hu_note = self.tr("HU: no DICOM folder set (HU window dialog), used the normal images")
+            else:
+                image_loader = hu_tools.make_image_loader(
+                    self._hu_dicom_root, self._hu_low, self._hu_high, self._hu_offset)
         try:
             res = self._runWithProgress(
                 self.tr("Generating overlays"), mask_tools.generate_overlays, images,
                 thickness=self.overlayThicknessSpin.value(),
                 out_root=self._mask_output_dir, base_dir=self.lastOpenDir,
                 value_map=label_colors.value_colors(maskRes.get("label_values") or {}),
+                image_loader=image_loader,
             )
         except Exception as e:
             logger.exception("Generate overlay failed")
@@ -4210,6 +4430,12 @@ class MainWindow(QtWidgets.QMainWindow):
             msg += self.tr("  %d unreadable") % res["failed"]
         if res["collisions"]:
             msg += self.tr("  %d skipped (duplicate file name)") % len(res["collisions"])
+        if image_loader is not None:
+            hu_note = self.tr("HU window %d .. %d used for %d image(s)") % (self._hu_low, self._hu_high, res["hu_used"])
+            if res["hu_fallback"]:
+                hu_note += self.tr(", %d fell back to the normal image (no matching DICOM)") % res["hu_fallback"]
+        if hu_note:
+            msg += "\n" + hu_note
         if res["cancelled"]:
             msg = self.tr("Cancelled. ") + msg
         msg = maskMsg + "\n" + msg

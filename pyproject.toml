@@ -32,6 +32,7 @@ dependencies = [
   "onnxruntime",
   "osam>=0.2.4,<0.3",
   "pillow>=2.8",
+  "pydicom",
   "opencv-python-headless",
   "pyqt5>=5.14.0",
   "pyqt5-qt5!=5.15.13 ; sys_platform == 'linux'",
