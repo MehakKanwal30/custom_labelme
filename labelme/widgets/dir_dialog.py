@@ -1,4 +1,7 @@
-"""Light-weight folder / file pickers.
+"""Light-weight folder / file pickers (Linux only).
+
+On Windows (and anything that is not Linux) every function here falls back to the
+stock Qt / native dialogs, exactly as upstream labelme calls them, with no pinning.
 
 Qt's stock file dialog can freeze the window for seconds on a real desktop: it asks the
 system icon theme for an icon (and a mime type) for every entry, lists every mounted
@@ -9,6 +12,7 @@ costs: one cached icon per kind, a short fixed side bar, no history, list view.
 import json
 import os
 import os.path as osp
+import sys
 
 from PyQt5 import QtCore, QtWidgets
 
@@ -29,6 +33,11 @@ class _FastIconProvider(QtWidgets.QFileIconProvider):
 
     def type(self, info):
         return "Folder" if info.isDir() else "File"
+
+
+def _use_lean_dialogs():
+    """The lean dialog + pinned folders are for Linux. Other platforms keep the default."""
+    return sys.platform.startswith("linux")
 
 
 _PINS_KEY = "dialogs/pinned_folders"
@@ -86,7 +95,9 @@ def _existing_start(path):
 
 
 def slim_file_dialog(dlg, start):
-    """Apply the light-weight settings to any QFileDialog."""
+    """Apply the light-weight settings to any QFileDialog (Linux only, no-op elsewhere)."""
+    if not _use_lean_dialogs():
+        return
     start = _existing_start(start)
     dlg.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
     dlg.setOption(QtWidgets.QFileDialog.DontResolveSymlinks, True)
@@ -152,6 +163,12 @@ def _install_pin_menu(dlg):
 
 def get_existing_directory(parent, caption, start=""):
     """Pick a folder. Returns the path, or "" if cancelled."""
+    if not _use_lean_dialogs():
+        # stock dialog, same call and options labelme always used
+        return QtWidgets.QFileDialog.getExistingDirectory(
+            parent, caption, start,
+            QtWidgets.QFileDialog.ShowDirsOnly | QtWidgets.QFileDialog.DontResolveSymlinks,
+        )
     start = _existing_start(start)
     dlg = QtWidgets.QFileDialog(parent, caption, start)
     dlg.setFileMode(QtWidgets.QFileDialog.Directory)

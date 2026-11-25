@@ -59,9 +59,19 @@ class HuWindowDialog(QtWidgets.QDialog):
         self.list = QtWidgets.QListWidget()
         self.list.setMinimumHeight(130)
         layout.addWidget(self.list)
+        self.overwriteHint = QtWidgets.QLabel()
+        self.overwriteHint.setStyleSheet("color: #d9822b; font-weight: bold;")
+        self.overwriteHint.setWordWrap(True)
+        self.overwriteHint.hide()
+        layout.addWidget(self.overwriteHint)
         row2 = QtWidgets.QHBoxLayout()
         self.renameBtn = QtWidgets.QPushButton(self.tr("Rename..."))
         self.updateBtn = QtWidgets.QPushButton(self.tr("Overwrite with current"))
+        self.updateBtn.setCheckable(True)  # armed = the next preset you click is overwritten
+        self.updateBtn.setToolTip(self.tr(
+            "Set the values you want, click this, then click the preset to overwrite.\n"
+            "Click again or press Esc to cancel."))
+        self._overwriteArmed = False
         self.deleteBtn = QtWidgets.QPushButton(self.tr("Delete"))
         for b in (self.renameBtn, self.updateBtn, self.deleteBtn):
             row2.addWidget(b)
@@ -99,7 +109,7 @@ class HuWindowDialog(QtWidgets.QDialog):
         self.list.itemClicked.connect(self._applyItem)
         self.list.currentRowChanged.connect(self._updateButtons)
         self.renameBtn.clicked.connect(self.renameSelected)
-        self.updateBtn.clicked.connect(self.overwriteSelected)
+        self.updateBtn.toggled.connect(self._armOverwrite)
         self.deleteBtn.clicked.connect(self.deleteSelected)
         self._fillList()
 
@@ -202,8 +212,11 @@ class HuWindowDialog(QtWidgets.QDialog):
 
     def _updateButtons(self, *_):
         has = self.list.currentRow() >= 0
-        for b in (self.renameBtn, self.updateBtn, self.deleteBtn):
+        for b in (self.renameBtn, self.deleteBtn):
             b.setEnabled(has)
+        self.updateBtn.setEnabled(bool(self._presets))  # needs no selection: you pick after arming
+        if not self._presets:
+            self._disarmOverwrite()
 
     def _changed(self, select=None):
         self._fillList(select)
@@ -228,11 +241,56 @@ class HuWindowDialog(QtWidgets.QDialog):
 
     def _applyItem(self, item):
         row = self.list.row(item)
-        if 0 <= row < len(self._presets):
-            p = self._presets[row]
-            self.setValues(p["low"], p["high"], emit=True)
+        if not 0 <= row < len(self._presets):
+            return
+        if self._overwriteArmed:
+            self._overwritePreset(row)  # keep the window as it is, store its values in this preset
+            return
+        p = self._presets[row]
+        self.setValues(p["low"], p["high"], emit=True)
+
+    # -- overwrite: arm the button, then click the preset ----------------------------
+
+    def _armOverwrite(self, checked):
+        self._overwriteArmed = checked
+        if checked:
+            self.updateBtn.setStyleSheet(
+                "QPushButton { background-color: #d9822b; color: white; font-weight: bold; }")
+            self.overwriteHint.setText(self.tr(
+                "Click the preset to overwrite with the current values (%d / %d). Esc cancels.")
+                % (self.low(), self.high()))
+            self.overwriteHint.show()
+            self.list.setStyleSheet("QListWidget { border: 2px solid #d9822b; }")
+        else:
+            self.updateBtn.setStyleSheet("")
+            self.list.setStyleSheet("")
+            self.overwriteHint.hide()
+
+    def _disarmOverwrite(self):
+        if self.updateBtn.isChecked():
+            self.updateBtn.setChecked(False)  # triggers _armOverwrite(False)
+
+    def _overwritePreset(self, row):
+        p = self._presets[row]
+        p["low"], p["high"] = self.low(), self.high()
+        self._disarmOverwrite()
+        self._changed(select=row)
+        self.overwriteHint.setText(self.tr("'%s' now stores %d / %d") % (p["name"], p["low"], p["high"]))
+        self.overwriteHint.show()
+        QtCore.QTimer.singleShot(3000, lambda: self.overwriteHint.hide() if not self._overwriteArmed else None)
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_Escape and self._overwriteArmed:
+            self._disarmOverwrite()  # cancel overwrite instead of closing the window
+            return
+        super().keyPressEvent(ev)
+
+    def hideEvent(self, ev):
+        self._disarmOverwrite()
+        super().hideEvent(ev)
 
     def saveNew(self):
+        self._disarmOverwrite()
         n = len(self._presets) + 1
         default = "Preset %d" % n
         while self._nameTaken(default):
@@ -245,6 +303,7 @@ class HuWindowDialog(QtWidgets.QDialog):
         self._changed(select=len(self._presets) - 1)
 
     def renameSelected(self):
+        self._disarmOverwrite()
         row = self.list.currentRow()
         if row < 0:
             return
@@ -254,14 +313,8 @@ class HuWindowDialog(QtWidgets.QDialog):
         self._presets[row]["name"] = name
         self._changed(select=row)
 
-    def overwriteSelected(self):
-        row = self.list.currentRow()
-        if row < 0:
-            return
-        self._presets[row]["low"], self._presets[row]["high"] = self.low(), self.high()
-        self._changed(select=row)
-
     def deleteSelected(self):
+        self._disarmOverwrite()
         row = self.list.currentRow()
         if row < 0:
             return
